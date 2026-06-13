@@ -356,7 +356,7 @@ With FastAPI, Redis, and Celery running:
 # Start all services (3 terminals)
 redis-server --daemonize yes
 uvicorn app.main:app --reload --port 8000 &
-celery -A app.tasks.celery_app worker --loglevel=info &
+celery -A app.tasks.celery_app worker --queues media,ai --concurrency 2 --loglevel=info &
 
 # Upload test video
 MEDIA_ID=$(curl -s -X POST http://localhost:8000/api/v1/uploads \

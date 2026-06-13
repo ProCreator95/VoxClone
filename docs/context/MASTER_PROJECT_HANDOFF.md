@@ -1,9 +1,9 @@
 # VoxClone — Master Project Handoff
 
 **Date:** 2026-06-14  
-**Branch:** `feature/subtitle-pipeline`  
-**Commit:** `94f77e0 Phase 2 subtitle generation complete`  
-**Tags:** `v0.1-foundation` (Phase 1) · `phase2-subtitles-working` (Phase 2)  
+**Branch:** `feature/subtitle-burn`  
+**Commit:** `2f9f643 Phase 3: subtitle burn-in complete`  
+**Tags:** `v0.1-foundation` (Phase 1) · `phase2-subtitles-working` (Phase 2) · `phase3-subtitle-burn` (Phase 3)  
 **Working tree:** clean
 
 > This document is completely self-contained. A new developer can continue
@@ -18,9 +18,9 @@ Users upload a video or audio file, choose a processing pipeline (subtitle
 generation, audio extraction, voice cloning, etc.), and download the result.
 All AI models run locally — no cloud API keys, no GPU required for Phase 2.
 
-**Primary use cases (current):**
-- Automatic subtitle generation from any video or audio
-- Subtitle burn-in (hardcode subtitles into video)
+**Primary use cases (current — Phases 1–3 complete):**
+- Automatic subtitle generation from any video or audio (Phase 2)
+- Subtitle burn-in — hardcode subtitles into video as H.264 MP4 (Phase 3)
 
 **Planned use cases (future phases):**
 - Vocal removal / karaoke
@@ -350,7 +350,7 @@ Valid `job_type` values: `audio_extraction`, `subtitle_generation`,
 
 ## 9. Completed Phases
 
-### Phase 1 — Backend Foundation ✅
+### Phase 1 — Backend Foundation ✅ COMPLETE
 
 - FastAPI app factory with lifespan (Redis connect/disconnect, DB create)
 - SQLite + async SQLAlchemy ORM (Media + Job models)
@@ -361,7 +361,7 @@ Valid `job_type` values: `audio_extraction`, `subtitle_generation`,
 - Celery task dispatch (task routing to named queues)
 - structlog JSON logging throughout
 
-### Phase 2 — Whisper Subtitle Pipeline ✅
+### Phase 2 — Whisper Subtitle Pipeline ✅ COMPLETE
 
 - `WhisperService` — wraps whisper.cpp CLI as an async subprocess
   - `_resolve_binary()` — resolves binary name/path, validates executable
@@ -380,6 +380,27 @@ Valid `job_type` values: `audio_extraction`, `subtitle_generation`,
 | 1 | Redis not connected in Celery worker | `redis_service.connect()` only called in FastAPI lifespan; workers fork without it | `worker_process_init` signal in `celery_app.py` |
 | 2 | `MissingGreenlet` on `job.media` | `lazy="select"` relationship triggers implicit SQL in async context | `get_by_id_with_media()` using `selectinload(Job.media)` |
 | 3 | `libwhisper.so.1 not found` | whisper.cpp shared libs not on `LD_LIBRARY_PATH` | `_build_subprocess_env()` prepends build dirs |
+
+### Phase 3 — Subtitle Burn-In ✅ COMPLETE
+
+- `FFmpegService._escape_filter_path()` — escapes `\`, `:`, `'` in file paths before embedding in FFmpeg filter strings (required because project path contains a space)
+- Rewrote `FFmpegService.burn_subtitles()` — explicit H.264 output (`-c:v libx264 -crf 23 -preset fast`), `libass` subtitle filter, optional style parameters (`font_name`, `font_size`, `font_color`, `outline_color`)
+- Full `burn_subtitles_task` implementation:
+  - **Primary workflow:** `subtitle_job_id` in parameters → look up prior job's `parameters["result_files"]["srt"]` automatically
+  - **Testing mode:** `srt_path` in parameters → use path directly
+  - Media type validation (rejects audio-only files with clear error)
+  - File existence validation for both video and SRT before FFmpeg call
+  - 16 `diag_burn_*` diagnostic events at every major step
+  - `parameters["result_files"]["burned_video"]` written on completion
+  - `parameters["subtitle_job_id"]` preserved in burn job record for traceability
+- `GET /jobs/{id}/download/video` — typed MP4 download endpoint
+
+**Two bugs diagnosed and fixed in Phase 3:**
+
+| # | Bug | Root Cause | Fix |
+|---|-----|-----------|-----|
+| 4 | FFmpeg filter path corruption | `subtitles=<path>:force_style=...` — `:` in path breaks filter option parsing | `_escape_filter_path()` escapes `\`, `:`, `'` in `ffmpeg_service.py` |
+| 5 | Undefined output codec | No `-c:v` flag — FFmpeg defaulted to `mpeg4` for `.mp4` output | Added `-c:v libx264 -crf 23 -preset fast` to burn command |
 
 ---
 
@@ -485,6 +506,87 @@ except Exception as _rollback_exc:
 
 ---
 
+## 10b. Phase 3 Exact Fixes (Code Level)
+
+### Fix 4 — `backend/app/services/ffmpeg_service.py`
+
+Added `_escape_filter_path()` static method and rewrote `burn_subtitles()`:
+
+```python
+@staticmethod
+def _escape_filter_path(path: Path) -> str:
+    s = str(path)
+    s = s.replace("\\", "\\\\")  # must come first
+    s = s.replace(":", "\\:")
+    s = s.replace("'", "\\'")
+    return s
+
+async def burn_subtitles(
+    self,
+    video_path: Path,
+    srt_path: Path,
+    output_path: Path,
+    font_size: int = 24,
+    font_name: str = "Arial",
+    font_color: str = "&H00FFFFFF&",
+    outline_color: str = "&H00000000&",
+) -> None:
+    escaped = self._escape_filter_path(srt_path)
+    force_style = (
+        f"FontName={font_name},FontSize={font_size},"
+        f"PrimaryColour={font_color},OutlineColour={outline_color},"
+        f"Outline=1,Shadow=0"
+    )
+    subtitle_filter = f"subtitles={escaped}:force_style='{force_style}'"
+    cmd = [
+        self.ffmpeg, "-i", str(video_path),
+        "-vf", subtitle_filter,
+        "-c:v", "libx264", "-crf", "23", "-preset", "fast",
+        "-c:a", "copy", "-y", str(output_path),
+    ]
+```
+
+### Fix 5 — `backend/app/tasks/media_tasks.py`
+
+`burn_subtitles_task` was replaced entirely.  Key additions over the old stub:
+
+```python
+# SRT resolution — primary workflow
+if subtitle_job_id:
+    async with get_db_context() as db:
+        prior_job = await JobService(db).get_by_id(subtitle_job_id)
+    # validate status == COMPLETED and job_type == SUBTITLE_GENERATION
+    srt_path = Path(prior_job.parameters["result_files"]["srt"])
+    params["subtitle_job_id"] = subtitle_job_id  # preserve for traceability
+
+# Validation gates
+if media.media_type != MediaType.VIDEO:
+    raise ValueError(f"Subtitle burn requires a video file; got '{media.media_type}'")
+if not video_path.exists():
+    raise FileNotFoundError(...)
+if not srt_path.exists():
+    raise FileNotFoundError(...)
+
+# Persist result_files (matches generate_subtitles_task pattern)
+params["result_files"] = {"burned_video": str(output_path)}
+async with get_db_context() as db:
+    await job_svc.update(job_id, parameters=params)
+    await job_svc.mark_completed(job_id, str(output_path))
+```
+
+### New endpoint — `backend/app/api/v1/endpoints/jobs.py`
+
+```python
+@router.get("/{job_id}/download/video")
+async def download_burned_video(job_id: str, ...) -> FileResponse:
+    # validates job_type == SUBTITLE_BURN and status == COMPLETED
+    # reads parameters["result_files"]["burned_video"]
+    # falls back to job.result_path for backward compatibility
+    return FileResponse(path=..., filename=f"{job_id}_subtitled.mp4", media_type="video/mp4")
+```
+
+---
+
 ## 11. Known Pitfalls for the Next Developer
 
 ### Celery queue names are mandatory
@@ -516,6 +618,20 @@ routes can use it via the greenlet context). In Celery tasks, always use
 connection is then shared across all tasks that run in that process. This is
 correct — `redis.asyncio.Redis` is connection-pool-based and handles
 concurrency internally.
+
+### FastAPI route declaration order is significant
+
+FastAPI matches routes **in the order they are registered**. Literal path
+segments (e.g. `/download/video`) MUST be declared before parameterised
+segments (e.g. `/download/{format_type}`). If the parameterised route comes
+first, the literal segment is captured as the parameter value and validated
+against the type annotation, causing a 422 before the correct handler is
+reached.
+
+This bit us in Phase 3 (Bug 6): `/{job_id}/download/video` was placed after
+`/{job_id}/download/{format_type}` and was therefore unreachable. The fix was
+to declare `download_burned_video` before `download_subtitle_format` in
+`jobs.py`. A guard comment now marks this ordering as intentional.
 
 ### No Alembic — schema changes require manual migration
 
@@ -621,63 +737,114 @@ sqlite3 voxclone.db \
 - `.vtt` file starts with `WEBVTT`
 - `.txt` file contains readable transcribed text
 
+### Phase 3 subtitle burn test
+
+```bash
+# Prerequisite: a completed subtitle_generation job
+MEDIA_ID="da763e0f-57f6-4317-b83d-b926fe25fb21"
+SUBTITLE_JOB_ID="ac849d78-fe28-4448-b029-a5c79a83ef94"
+
+# Submit burn job
+BURN_JOB_ID=$(curl -s -X POST http://localhost:8000/api/v1/jobs \
+  -H "Content-Type: application/json" \
+  -d "{\"media_id\":\"$MEDIA_ID\",\"job_type\":\"subtitle_burn\",\
+\"parameters\":{\"subtitle_job_id\":\"$SUBTITLE_JOB_ID\"}}" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+
+echo "Burn job: $BURN_JOB_ID"
+
+# Poll until terminal
+until curl -s "http://localhost:8000/api/v1/jobs/$BURN_JOB_ID/progress" \
+  | python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+print(d['status'], d.get('progress'), d.get('current_step'))
+exit(0 if d['status'] in ('completed','failed') else 1)
+" 2>/dev/null; do sleep 3; done
+
+# Inspect job record
+curl -s "http://localhost:8000/api/v1/jobs/$BURN_JOB_ID" | python3 -m json.tool
+
+# Download via generic route
+curl -O -J "http://localhost:8000/api/v1/jobs/$BURN_JOB_ID/result"
+
+# Download via typed route
+curl -O -J "http://localhost:8000/api/v1/jobs/$BURN_JOB_ID/download/video"
+
+# Verify output
+ffprobe "processed/${BURN_JOB_ID}_subtitled.mp4" 2>&1 | grep -E "Duration|Video:|Audio:"
+# Expected: Video: h264 ... Audio: opus
+```
+
+**Phase 3 success criteria:**
+- `status = completed`, `progress = 100`
+- `result_path` ends in `_subtitled.mp4`
+- `parameters.result_files.burned_video` equals `result_path`
+- `parameters.subtitle_job_id` matches `$SUBTITLE_JOB_ID`
+- `GET /download/video` returns HTTP 200, `Content-Type: video/mp4`
+- `ffprobe` Video stream: `h264`
+- `ffprobe` Audio stream: `opus` (stream-copied)
+- Subtitles are visibly hardcoded when played
+
 ---
 
 ## 13. Remaining Roadmap
 
-### Phase 3 — Subtitle Burn-In (next recommended task)
+### Phase 3 — Subtitle Burn-In ✅ COMPLETE
 
-**What:** Hardcode SRT subtitles into a video using FFmpeg.
+Implemented in commit `2f9f643`, tag `phase3-subtitle-burn`.
+See sections 9 and 10b for full details.
 
-**Status:** Stub exists in `media_tasks.py`. `FFmpegService.burn_subtitles()` is implemented.
+### Phase 4 — Karaoke Generation (next recommended task)
+
+**What:** Produce karaoke-style videos where each word is highlighted in sync with speech.
+
+**Status:** `karaoke_task` stub exists in `media_tasks.py` (currently marks failed immediately).
+No new dependencies required — uses whisper.cpp word timestamps and FFmpeg ASS filter.
 
 **Implementation steps:**
-1. Update `burn_subtitles_task` in `app/tasks/media_tasks.py`:
-   - Accept `subtitle_job_id` in `parameters` — look up SRT from `prior_job.parameters.result_files.srt`
-   - Or accept a direct `srt_path` parameter
-   - Call `ffmpeg.burn_subtitles(video_path, srt_path, output_path)`
-2. Return burned video via `GET /jobs/{id}/result`
-3. Optionally expose style parameters (font, size, color, position)
+1. Add `word_timestamps: bool = False` param to `WhisperService.transcribe()` — pass `--word-timestamps` to whisper.cpp CLI when true
+2. Add `TranscriptResult.to_ass()` — generate Advanced SubStation Alpha format with per-word highlight style blocks
+3. Implement `karaoke_task` in `media_tasks.py`:
+   - Same pipeline as `generate_subtitles_task` but with word-timestamps enabled
+   - Generate `.ass` file instead of `.srt`
+   - Burn `.ass` into video via FFmpeg `subtitles=` filter (same path-escaping as Phase 3)
+4. Add `GET /jobs/{id}/download/ass` endpoint
+5. Re-use `GET /jobs/{id}/download/video` pattern for the output MP4
 
-**Test:** Upload MP4 → generate subtitles → burn subtitles → watch output video
+**See section 18 ("How to Start Phase 4") for full architectural details.**
 
-### Phase 4 — User-facing Audio Extraction
+### Phase 5 — Audio Enhancement
 
-Extract audio from video with format/quality control (MP3, FLAC, WAV).
-`extract_audio_task` exists but targets 16kHz WAV for Whisper. Needs format options.
-
-### Phase 5 — Karaoke / Vocal Removal
-
-Separate vocals from music using Demucs. Requires `pip install demucs` + PyTorch.
-`karaoke_task` stub exists. `DemucsService` to be created.
-
-### Phase 6 — Audio Enhancement
-
-Noise removal via DeepFilterNet. Requires `pip install deepfilternet` + PyTorch.
+Noise removal and audio clarity improvement via DeepFilterNet.
+Requires `pip install deepfilternet` + PyTorch CPU.
 `audio_enhance_task` stub exists.
+
+### Phase 6 — Vocal Removal
+
+Separate vocals from music using Demucs (music source separation).
+Requires `pip install demucs` + PyTorch.
+`karaoke_task` stub exists — rename to `vocal_removal_task` or add a separate task.
 
 ### Phase 7 — Text-to-Speech (Piper)
 
-Local TTS via Piper. No source media needed — `media_id` may be nullable.
+Local TTS via Piper TTS. No source media needed — `media_id` may be nullable or point to a reference audio file.
 
 ### Phase 8 — Voice Replacement
 
-Combines Phase 2 (transcript), Phase 7 (TTS), and FFmpeg (audio replacement).
+Combines Phase 2 (transcript) + Phase 7 (TTS) + FFmpeg (audio track replacement).
+Transcribe → generate new speech → replace audio stream in original video.
 
-### Phase 9 — Voice Cloning (OpenVoice)
+### Phase 9+ — Voice Cloning (OpenVoice)
 
 Clone a speaker's voice from a reference clip. GPU strongly recommended.
 `voice_clone_task` stub exists.
 
-### Phase 10 — Voice Conversion
+### Phase 10 — Flutter Frontend
 
-Convert source voice to match a target voice.
+Mobile + desktop UI. All Phase 1–9 APIs must be stable first.
 
-### Phase 11 — Flutter Frontend
-
-Mobile + desktop UI. All Phase 1–10 APIs must be stable first.
-
-### Phase 12 — Production Hardening
+### Phase 11 — Production Hardening
 
 PostgreSQL + Alembic migrations, authentication, Docker Compose, GPU support, monitoring.
 
@@ -703,25 +870,30 @@ PostgreSQL + Alembic migrations, authentication, Docker Compose, GPU support, mo
 ```bash
 # Current state
 git log --oneline -5
+# 2f9f643 Phase 3: subtitle burn-in complete   ← HEAD
+# 19f8cc8 Finalize Phase 2 documentation and handoff
 # 94f77e0 Phase 2 subtitle generation complete
 # 52c5d3e Phase 1 foundation validated
 
 git tag
-# phase2-subtitles-working   ← Phase 2 complete (HEAD)
-# v0.1-foundation             ← Phase 1 complete
+# phase3-subtitle-burn      ← Phase 3 complete (current HEAD)
+# phase2-subtitles-working  ← Phase 2 complete
+# v0.1-foundation           ← Phase 1 complete
 
 # Safe rollback points
 git checkout v0.1-foundation           # Phase 1 only — no subtitle pipeline
-git checkout phase2-subtitles-working  # Phase 2 complete (current)
+git checkout phase2-subtitles-working  # Phase 2 complete — subtitles working
+git checkout phase3-subtitle-burn      # Phase 3 complete — burn-in working (current)
 
-# To commit Phase 3 work
+# To commit Phase 4 work
 git add .
-git commit -m "Phase 3: subtitle burn-in
+git commit -m "Phase 4: karaoke generation
 
-- Complete burn_subtitles_task with subtitle_job_id resolution
-- FFmpeg hardcode SRT into video
-- Add burned video download endpoint"
-git tag -a phase3-subtitle-burn -m "Phase 3: subtitle burn-in"
+- Word-level timestamps via whisper.cpp --word-timestamps
+- TranscriptResult.to_ass() for ASS subtitle format
+- karaoke_task with word-highlight burn-in
+- GET /jobs/{id}/download/ass endpoint"
+git tag -a phase4-karaoke -m "Phase 4: karaoke generation"
 ```
 
 ---
@@ -737,17 +909,18 @@ git tag -a phase3-subtitle-burn -m "Phase 3: subtitle burn-in"
 | `app/database/session.py` | `get_db_context()` — async context manager for Celery tasks |
 | `app/services/job_service.py` | `get_by_id_with_media()` — always use in Celery tasks |
 | `app/services/whisper_service.py` | `_build_subprocess_env()` — sets `LD_LIBRARY_PATH` |
-| `app/services/ffmpeg_service.py` | `extract_audio()`, `burn_subtitles()`, `probe()` |
+| `app/services/ffmpeg_service.py` | `_escape_filter_path()`, `extract_audio()`, `burn_subtitles()`, `probe()` |
 | `app/services/redis_service.py` | Module-level singleton; connect via `worker_process_init` |
 | `app/tasks/celery_app.py` | `worker_process_init` hook — connects Redis in each worker |
-| `app/tasks/media_tasks.py` | All task implementations; pipeline + placeholder stubs |
+| `app/tasks/media_tasks.py` | All task implementations; Phases 1–3 complete, Phases 4+ stubbed |
+| `app/api/v1/endpoints/jobs.py` | All job endpoints including `download/video` (Phase 3) |
 
 ---
 
 ## 17. Phase 2 Validation Evidence
 
-The subtitle pipeline was validated end-to-end on 2026-06-14. The following
-run confirms every component of Phase 2 is working correctly.
+The subtitle pipeline was validated end-to-end on 2026-06-14.  
+Tag: `phase2-subtitles-working` · Commit: `94f77e0`
 
 ### Successful run identifiers
 
@@ -825,4 +998,204 @@ for any whisper.cpp build tree location.
 
 ---
 
-*Last updated: 2026-06-14 by Cursor AI agent — Phase 2 validation evidence added; all three bugs documented with working run IDs.*
+---
+
+## 18. Phase 3 Validation Evidence
+
+The subtitle burn-in pipeline was validated end-to-end on 2026-06-14.  
+Tag: `phase3-subtitle-burn` · Commit: `2f9f643`
+
+### Run identifiers
+
+| Field | Value |
+|-------|-------|
+| Media ID | `da763e0f-57f6-4317-b83d-b926fe25fb21` |
+| Subtitle generation job ID | `ac849d78-fe28-4448-b029-a5c79a83ef94` |
+| Subtitle burn job ID | `c4263f06-ef6d-4005-91e8-d422fb00be26` |
+| Burn job final status | `completed` |
+| Burn job final progress | `100` |
+
+### Generated output files
+
+```
+processed/ac849d78-fe28-4448-b029-a5c79a83ef94_audio.wav
+processed/ac849d78-fe28-4448-b029-a5c79a83ef94_transcript.txt
+processed/ac849d78-fe28-4448-b029-a5c79a83ef94_subtitles.srt
+processed/ac849d78-fe28-4448-b029-a5c79a83ef94_subtitles.vtt
+processed/c4263f06-ef6d-4005-91e8-d422fb00be26_subtitled.mp4   ← Phase 3 output
+```
+
+### Verified components
+
+| Component | Verified |
+|-----------|---------|
+| `subtitle_job_id` → SRT resolution from prior job | ✅ |
+| Media type validation (VIDEO required) | ✅ |
+| Source video file existence check | ✅ |
+| SRT file existence check | ✅ |
+| FFmpeg path escaping (`_escape_filter_path`) | ✅ |
+| H.264 video re-encode (`-c:v libx264 -crf 23`) | ✅ |
+| Audio stream-copy (no re-encode) | ✅ |
+| `parameters.result_files.burned_video` written | ✅ |
+| `parameters.subtitle_job_id` preserved | ✅ |
+| `GET /jobs/{id}/result` serves burned MP4 | ✅ |
+| `GET /jobs/{id}/download/video` serves burned MP4 | ✅ |
+
+### FFprobe validation
+
+```
+ffprobe processed/c4263f06-ef6d-4005-91e8-d422fb00be26_subtitled.mp4
+
+Video: h264 (High), yuv420p  — subtitles hardcoded into video stream
+Audio: opus                   — stream-copied from source, not re-encoded
+```
+
+### Two bugs fixed before this run succeeded
+
+**Bug 4 — FFmpeg filter path not escaped**
+
+The project lives at a path containing a space (`Mustafa projects`). The
+`subtitles=` filter string is parsed by FFmpeg's filtergraph engine, which uses
+`:` as an option delimiter. Without escaping, any special character in the path
+silently corrupts the filter expression, causing either a filter parse error or
+no subtitles being rendered.
+
+Fix: `_escape_filter_path()` in `ffmpeg_service.py` escapes `\` → `\\`,
+`:` → `\:`, `'` → `\'` before path is embedded in the filter string.
+
+**Bug 5 — No explicit video codec**
+
+Without `-c:v`, FFmpeg defaults to `mpeg4` for `.mp4` output.
+`mpeg4` produces lower-quality output and may not be supported by all players.
+
+Fix: Added `-c:v libx264 -crf 23 -preset fast` to the burn command.
+`ffprobe` confirms `Video: h264 (High)` on the output file.
+
+---
+
+## 19. How to Start Phase 4 — Karaoke Generation
+
+### What karaoke generation produces
+
+A video where each word is highlighted (changes colour) at the exact moment it
+is spoken — the same visual effect as karaoke machines. The underlying format is
+ASS (Advanced SubStation Alpha), which supports per-word style overrides that
+the simpler SRT/VTT formats do not.
+
+### Required architecture changes
+
+#### A. `WhisperService.transcribe()` — add word-level timestamps
+
+whisper.cpp supports word-level timestamps via the `--word-timestamps` flag.
+When enabled, each segment's JSON output includes a `words` array:
+
+```json
+{
+  "segments": [{
+    "text": "Hello world",
+    "start": 0.0, "end": 1.2,
+    "words": [
+      {"word": "Hello", "start": 0.0, "end": 0.6},
+      {"word": "world", "start": 0.7, "end": 1.2}
+    ]
+  }]
+}
+```
+
+Change required in `whisper_service.py`:
+```python
+async def transcribe(
+    self,
+    audio_path: Path,
+    language: Optional[str] = None,
+    word_timestamps: bool = False,   # ← new param
+) -> TranscriptResult:
+    if word_timestamps:
+        cmd.append("--word-timestamps")
+        cmd.append("true")
+```
+
+`TranscriptResult` needs a `words` field per segment:
+```python
+@dataclass
+class WordTimestamp:
+    word: str
+    start: float
+    end: float
+
+@dataclass
+class Segment:
+    ...
+    words: list[WordTimestamp] = field(default_factory=list)
+```
+
+#### B. `TranscriptResult.to_ass()` — generate ASS subtitle format
+
+ASS format supports inline style overrides. The karaoke effect uses `{\1c&H<colour>&}` tags to change the primary colour of individual words.
+
+Example ASS karaoke line:
+```
+Dialogue: 0,0:00:00.00,0:00:01.20,Default,,0,0,0,,{\1c&H0000FF&}Hello {\1c&HFFFFFF&}world
+```
+
+The `to_ass()` method iterates over segments, and within each segment iterates
+over word timestamps, emitting one `Dialogue` line per segment where each word
+is wrapped in a colour override that fires at word start time.
+
+#### C. `karaoke_task` in `media_tasks.py`
+
+Full replacement of the current stub. Pipeline:
+
+```
+1. mark_started()
+2. update_progress(10, "Extracting audio")
+3. FFmpegService.extract_audio()       — same as Phase 2
+4. update_progress(25, "Transcribing with word timestamps")
+5. WhisperService.transcribe(word_timestamps=True)
+6. update_progress(70, "Generating ASS subtitle file")
+7. TranscriptResult.to_ass() → write <job_id>_karaoke.ass
+8. update_progress(75, "Burning karaoke subtitles")
+9. FFmpegService.burn_subtitles(video, ass_path, output)   — same FFmpeg filter
+10. update_progress(90, "Finalising")
+11. params["result_files"] = {"ass": str(ass_path), "video": str(output)}
+12. mark_completed()
+```
+
+No new dependencies. No new queues. Routes to `ai` queue (same as
+`generate_subtitles_task` — computationally intensive).
+
+#### D. New API endpoints
+
+```
+GET /jobs/{id}/download/ass   — ASS subtitle file
+GET /jobs/{id}/download/video — burned karaoke MP4 (re-use Phase 3 route pattern)
+```
+
+### Job creation payload
+
+```json
+POST /api/v1/jobs
+{
+  "media_id": "<uuid>",
+  "job_type": "karaoke",
+  "parameters": {
+    "language": "en",
+    "highlight_color": "&H000000FF&",   // yellow in ASS AABBGGRR
+    "base_color":      "&H00FFFFFF&"    // white
+  }
+}
+```
+
+### Pitfalls to avoid
+
+| Pitfall | Mitigation |
+|---------|-----------|
+| whisper.cpp `--word-timestamps` changes the JSON output schema | Parse `words` array defensively; fall back to segment-level if `words` absent |
+| ASS format is whitespace-sensitive | Test `.to_ass()` output against `ffprobe` subtitle stream validation |
+| Word timestamps may not be available on all whisper models | `ggml-tiny.en.bin` supports word timestamps; verify on first run |
+| FFmpeg `subtitles=` filter with `.ass` file | Same path-escaping rule applies — use `_escape_filter_path()` |
+| Task routes to `ai` queue | Celery must be started with `--queues media,ai` — already required |
+
+---
+
+*Last updated: 2026-06-14 by Cursor AI agent — Phase 3 complete; Bug 6 (FastAPI route ordering) fixed and documented.*

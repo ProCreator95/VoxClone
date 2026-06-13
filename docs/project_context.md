@@ -1,3 +1,20 @@
+---
+
+> **DEPRECATED**
+>
+> This document is retained for historical reference only.
+>
+> **Reasons for deprecation:**
+> - Early vision/requirements document; predates all implementation
+> - Contains no implementation state, branch info, or phase completion status
+> - Phase completion and architecture are fully documented in the authoritative handoff
+> - Roadmap ordering does not match the current approved phase sequence
+>
+> **Use instead:**
+> `docs/context/MASTER_PROJECT_HANDOFF.md` — single authoritative reference
+
+---
+
 Project Name: VoxClone
 
 Mission:

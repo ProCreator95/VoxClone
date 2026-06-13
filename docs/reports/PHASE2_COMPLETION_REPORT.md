@@ -1,3 +1,22 @@
+---
+
+> **DEPRECATED**
+>
+> This document is retained for historical reference only.
+>
+> **Reasons for deprecation:**
+> - Written when `openai-whisper` (Python package) was the planned backend
+> - Final implementation uses whisper.cpp CLI exclusively — `openai-whisper` is not installed
+> - Config schema described here (`WHISPER_BACKEND`, `WHISPER_MODEL`, `WHISPER_MODELS_DIR`) does not match `config.py`
+> - "Files Modified" list predates the Phase 2 bug fixes (`celery_app.py`, `job_service.py`, `whisper_service.py`)
+> - "Known Limitations" section describes limitations that were fixed before Phase 2 was validated
+> - `requirements.txt` change adding `openai-whisper` was reverted; whisper.cpp needs no Python dependency
+>
+> **Use instead:**
+> `docs/context/MASTER_PROJECT_HANDOFF.md` (Sections 9, 10, 17 — Phase 2 implementation and validation)
+
+---
+
 # Phase 2 Completion Report — Whisper Subtitle Pipeline
 
 **Date:** June 13, 2026

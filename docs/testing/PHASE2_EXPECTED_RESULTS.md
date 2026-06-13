@@ -1,3 +1,21 @@
+---
+
+> **DEPRECATED**
+>
+> This document is retained for historical reference only.
+>
+> **Reasons for deprecation:**
+> - WH-01 and WH-02 tests reference `openai-whisper` Python package — not installed in this project
+> - ERR-03 expected error message references `openai-whisper is not installed` — actual errors reference whisper.cpp binary/model paths
+> - INF-05 expected task list shows 5 tasks and default `celery` queue; Celery must use `--queues media,ai`
+> - Progress step "Running Whisper speech recognition" is accurate but the full `diag_*` event sequence is not documented here
+> - Phase 2 has been validated with actual job IDs; this document's hypothetical examples are superseded
+>
+> **Use instead:**
+> `docs/context/MASTER_PROJECT_HANDOFF.md` (Section 17 — Phase 2 Validation Evidence with real job IDs and outputs)
+
+---
+
 # Phase 2 — Whisper Subtitle Pipeline: Expected Results Reference
 
 This document defines the exact expected outputs for every test in the Phase 2 test plan.

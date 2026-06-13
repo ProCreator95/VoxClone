@@ -1,3 +1,23 @@
+---
+
+> **DEPRECATED**
+>
+> This document is retained for historical reference only.
+>
+> **Reasons for deprecation:**
+> - All bugs described in this document have been fixed in commit `94f77e0`
+> - Bug 1 (Redis not connected in workers): fixed via `worker_process_init` in `celery_app.py`
+> - Bug 2 (SQLAlchemy MissingGreenlet): fixed via `get_by_id_with_media()` in `job_service.py`
+> - Branch referenced (`feature/subtitle-pipeline`) is not the active branch
+> - Describes the task code structure in its pre-fix state; current code is significantly different
+> - "Validation After Fix" section's expected log sequence is now the normal baseline
+>
+> **Use instead:**
+> `docs/context/KNOWN_BUGS_AND_ROOT_CAUSES.md` — canonical record of all bugs and their fixes
+> `docs/context/MASTER_PROJECT_HANDOFF.md` (Section 10 — Exact Fixes Applied)
+
+---
+
 # Phase 2 Debug Handoff — Subtitle Generation Failure
 
 **Date:** 2026-06-13

@@ -1,3 +1,25 @@
+---
+
+> **DEPRECATED**
+>
+> This document is retained for historical reference only.
+>
+> **Reasons for deprecation:**
+> - Active branch is `feature/subtitle-burn`, not `feature/subtitle-pipeline`
+> - Lists Phase 3 (subtitle burn-in) as "stub ready" — Phase 3 is complete as of `2f9f643`
+> - Phase numbering (Phases 3–10) does not match the current approved roadmap
+> - Celery command missing `--queues media,ai` (tasks will not execute without this)
+> - API endpoint list is missing `GET /jobs/{id}/download/video` (added in Phase 3)
+> - Job payload shows `"model": "base"` — not a valid parameter for the whisper.cpp backend
+> - `.env` example shows `WHISPER_CPP_BINARY=whisper-cli` (PATH-based); actual value is the relative build path
+> - "Next Steps" section is now obsolete — Phase 4 (Karaoke) is the next step
+>
+> **Use instead:**
+> `docs/context/MASTER_PROJECT_HANDOFF.md` — single authoritative reference
+> `docs/context/NEXT_SESSION_START_HERE.md` — quick-start for new sessions
+
+---
+
 # VoxClone — Handoff Document for New Cursor Session
 
 > Copy the contents of this file and paste it at the start of a new Cursor chat.

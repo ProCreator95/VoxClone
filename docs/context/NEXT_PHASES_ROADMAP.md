@@ -1,3 +1,22 @@
+---
+
+> **DEPRECATED**
+>
+> This document is retained for historical reference only.
+>
+> **Reasons for deprecation:**
+> - Phase 3 (Subtitle Burn-In) is shown as `🔜 not yet done` — it is complete as of `2f9f643`
+> - Phase numbering conflicts with the current approved roadmap:
+>   - This doc: Phase 4 = Audio Extraction, Phase 5 = Karaoke/Vocal Removal, Phase 6 = Audio Enhancement
+>   - Current roadmap: Phase 4 = Karaoke Generation, Phase 5 = Audio Enhancement, Phase 6 = Vocal Removal
+> - Phase 3 API design shows `"font_color": "white"` — the implemented API uses ASS hex format (`"&H00FFFFFF&"`)
+> - Phase 3 implementation steps describe the stub state, not the completed implementation
+>
+> **Use instead:**
+> `docs/context/MASTER_PROJECT_HANDOFF.md` (Section 13 — Remaining Roadmap, Section 19 — How to Start Phase 4)
+
+---
+
 # VoxClone — Next Phases Roadmap
 
 ## Overview

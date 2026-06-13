@@ -1,3 +1,22 @@
+---
+
+> **DEPRECATED**
+>
+> This document is retained for historical reference only.
+>
+> **Reasons for deprecation:**
+> - Section 2 (Whisper Validation) tests `import whisper` and `openai-whisper` — not used in this project
+> - Celery startup command (Section 1.4) is missing `--queues media,ai`; without this flag, all tasks silently queue forever
+> - Job creation payload includes `"model": "base"` — not a valid parameter for the whisper.cpp backend
+> - Section 4.2 progress sequence does not match the actual `diag_*` log event sequence
+> - Phase 2 pipeline has been validated; this guide is superseded by the validated test commands
+>
+> **Use instead:**
+> `docs/context/MASTER_PROJECT_HANDOFF.md` (Section 12 — Testing Commands)
+> `docs/context/NEXT_SESSION_START_HERE.md` (end-to-end pipeline test script)
+
+---
+
 # Phase 2 — Whisper Subtitle Pipeline: Manual Testing Guide
 
 All commands assume you are inside `backend/` and the virtual environment is activated.

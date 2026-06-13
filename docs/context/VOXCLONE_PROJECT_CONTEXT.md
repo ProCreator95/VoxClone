@@ -1,3 +1,25 @@
+---
+
+> **DEPRECATED**
+>
+> This document is retained for historical reference only.
+>
+> **Reasons for deprecation:**
+> - Active branch is `feature/subtitle-burn`, not `feature/subtitle-pipeline`
+> - Phase 3 (subtitle burn-in) listed as a planned capability — it is complete as of `2f9f643`
+> - API endpoint table is missing `GET /jobs/{id}/download/video` (added in Phase 3)
+> - Celery command shown without `--queues media,ai` (tasks will not execute without this)
+> - Repo structure references `app/utils/file_utils.py`, `logs/`, `Dockerfile`, `docker-compose.yml` which do not exist
+> - Redis progress cache key format shown as `job_progress:{job_id}` — actual format is `job:progress:{job_id}`
+> - Redis TTL shown as 3600s — actual TTL is 86400s (24h)
+> - Config schema (`LOGS_DIR`, `MAX_UPLOAD_SIZE_BYTES`) may not match current `config.py`
+> - Git state section shows tag `v0.1-foundation` only; current tags include `phase2-subtitles-working` and `phase3-subtitle-burn`
+>
+> **Use instead:**
+> `docs/context/MASTER_PROJECT_HANDOFF.md` — single authoritative reference
+
+---
+
 # VoxClone — Complete Project Context
 
 > Paste this document at the start of a new Cursor chat to continue development without losing context.

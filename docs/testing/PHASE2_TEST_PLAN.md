@@ -1,3 +1,21 @@
+---
+
+> **DEPRECATED**
+>
+> This document is retained for historical reference only.
+>
+> **Reasons for deprecation:**
+> - Tests WH-01 through WH-04 reference `openai-whisper` Python package — not used in final implementation
+> - Whisper validation is now handled by `WhisperService._resolve_binary()` and `_build_subprocess_env()` (whisper.cpp)
+> - Test environment requirements list `openai-whisper` as a dependency — it is not installed
+> - Phase 2 has been validated end-to-end; the test plan is now a historical artifact
+> - Phase 3 validation evidence supersedes this document as proof of pipeline correctness
+>
+> **Use instead:**
+> `docs/context/MASTER_PROJECT_HANDOFF.md` (Section 12 — Testing Commands, Section 17 — Phase 2 Validation Evidence)
+
+---
+
 # Phase 2 — Whisper Subtitle Pipeline: Test Plan
 
 ## Overview

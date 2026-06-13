@@ -1,3 +1,23 @@
+---
+
+> **DEPRECATED**
+>
+> This document is retained for historical reference only.
+>
+> **Reasons for deprecation:**
+> - Pre-commit checklist for a commit that was completed in `94f77e0`
+> - Branch referenced (`feature/subtitle-pipeline`) is not the active branch (`feature/subtitle-burn`)
+> - References `WHISPER_BACKEND: openai` and `openai-whisper` — the final implementation uses whisper.cpp exclusively
+> - Config schema (`WHISPER_MODEL`, `WHISPER_MODELS_DIR`) does not match the actual `config.py`
+> - Checklist item "openai-whisper is importable" is invalid — openai-whisper is not used
+> - Tag template `v0.2-subtitle-pipeline` was not applied; actual tags are `phase2-subtitles-working`, `phase3-subtitle-burn`
+> - Commit message template references openai-whisper as a dependency
+>
+> **Use instead:**
+> `docs/context/MASTER_PROJECT_HANDOFF.md` (Section 15 — Git Reference)
+
+---
+
 # Phase 2 Git Checkpoint
 
 ## Pre-Commit Verification
