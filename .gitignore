@@ -1,0 +1,73 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Environment files
+.env
+.env.local
+
+# Database
+*.db
+*.db-journal
+
+# Uploads & generated media
+uploads/
+processed/
+storage/
+temp/
+tmp/
+cache/
+
+# Logs
+logs/
+*.log
+
+# Python tooling
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# IDE
+.vscode/
+.idea/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Redis
+dump.rdb
+appendonly.aof
+
+# Celery
+celerybeat-schedule
+celerybeat.pid
+
+# AI Models
+models/
+voice_models/
+.huggingface/
+torch_cache/
+*.pt
+*.pth
+*.ckpt
+*.onnx
+
+# FFmpeg temporary files
+*.ts
+*.aac
+
+# Keep empty directories
+!uploads/.gitkeep
+!processed/.gitkeep
