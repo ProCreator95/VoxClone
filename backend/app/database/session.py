@@ -10,6 +10,9 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from app.core.config import get_settings
+from app.core.logging import get_logger
+
+_diag_logger = get_logger(__name__)
 
 _settings = get_settings()
 
@@ -59,7 +62,12 @@ async def get_db_context() -> AsyncGenerator[AsyncSession, None]:
         try:
             yield session
             await session.commit()
-        except Exception:
+        except Exception as _rollback_exc:
+            _diag_logger.exception(
+                "diag_db_context_rollback",
+                exc_type=type(_rollback_exc).__name__,
+                exc_message=str(_rollback_exc),
+            )
             await session.rollback()
             raise
         finally:

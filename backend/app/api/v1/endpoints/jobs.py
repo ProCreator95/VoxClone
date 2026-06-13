@@ -1,19 +1,31 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import FileResponse
 
 from app.api.deps import get_job_service, get_media_service, get_redis
 from app.core.exceptions import ResultNotReadyError
-from app.models.job import JobStatus
+from app.models.job import JobStatus, JobType
 from app.schemas.common import MessageResponse
 from app.schemas.job import JobCreate, JobProgressResponse, JobResponse
 from app.services.job_service import JobService
 from app.services.media_service import MediaService
 from app.services.redis_service import RedisService
 from app.tasks.media_tasks import dispatch_job
+
+_SUBTITLE_MIME = {
+    "transcript": "text/plain",
+    "srt": "text/plain",
+    "vtt": "text/vtt",
+}
+_SUBTITLE_EXT = {
+    "transcript": ".txt",
+    "srt": ".srt",
+    "vtt": ".vtt",
+}
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
@@ -124,3 +136,65 @@ async def cancel_job(
 ) -> MessageResponse:
     await job_svc.mark_cancelled(job_id)
     return MessageResponse(message=f"Job '{job_id}' has been cancelled")
+
+
+@router.get(
+    "/{job_id}/download/{format_type}",
+    summary="Download a specific subtitle output format",
+    description=(
+        "Download one of the three subtitle pipeline outputs:\n"
+        "- **transcript** — plain-text transcript (.txt)\n"
+        "- **srt** — SubRip subtitle file (.srt)\n"
+        "- **vtt** — WebVTT subtitle file (.vtt)\n\n"
+        "Only available for completed `subtitle_generation` jobs."
+    ),
+)
+async def download_subtitle_format(
+    job_id: str,
+    format_type: Literal["transcript", "srt", "vtt"],
+    job_svc: JobService = Depends(get_job_service),
+) -> FileResponse:
+    job = await job_svc.get_by_id(job_id)
+
+    if job.job_type != JobType.SUBTITLE_GENERATION:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Job '{job_id}' is of type '{job.job_type}', "
+                "not 'subtitle_generation'. "
+                "Use /jobs/{id}/result for other job types."
+            ),
+        )
+
+    if job.status != JobStatus.COMPLETED:
+        raise ResultNotReadyError(job_id=job_id, current_status=job.status)
+
+    result_files: dict = (job.parameters or {}).get("result_files", {})
+    file_path_str = result_files.get(format_type)
+
+    # Graceful fallback: if result_files is missing, try result_path for srt
+    if not file_path_str and format_type == "srt" and job.result_path:
+        file_path_str = job.result_path
+
+    if not file_path_str:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=(
+                f"Output format '{format_type}' is not available for job '{job_id}'. "
+                "The job may have been created with an older version of VoxClone."
+            ),
+        )
+
+    path = Path(file_path_str)
+    if not path.exists():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Output file for format '{format_type}' has been deleted from disk.",
+        )
+
+    filename = f"{job_id}{_SUBTITLE_EXT[format_type]}"
+    return FileResponse(
+        path=str(path),
+        filename=filename,
+        media_type=_SUBTITLE_MIME[format_type],
+    )

@@ -31,5 +31,9 @@ httpx>=0.27.0
 # Media processing
 ffmpeg-python>=0.2.0
 
+# Speech recognition
+# whisper.cpp is a compiled C++ binary — no Python package required here.
+# Install instructions: docs/testing/WHISPER_CPP_SETUP.md
+
 # Utilities
 python-dotenv>=1.0.1

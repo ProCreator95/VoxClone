@@ -61,6 +61,26 @@ class RedisService:
         error_message: Optional[str] = None,
     ) -> None:
         """Cache a progress snapshot for low-latency polling by clients."""
+        # ── DIAG: log client state before every set_progress call ────────────
+        client_is_none = self._client is None
+        logger.debug(
+            "diag_redis_set_progress_called",
+            job_id=job_id,
+            status=status,
+            progress=progress,
+            client_is_none=client_is_none,
+        )
+        if client_is_none:
+            logger.error(
+                "diag_redis_client_is_none",
+                job_id=job_id,
+                detail=(
+                    "RedisService._client is None — connect() was never called in this process. "
+                    "Celery workers do not run the FastAPI lifespan; "
+                    "redis_service.connect() must be called explicitly in each worker process."
+                ),
+            )
+
         key = f"{_PROGRESS_KEY_PREFIX}{job_id}"
         payload = {
             "job_id": job_id,
@@ -69,7 +89,17 @@ class RedisService:
             "current_step": current_step,
             "error_message": error_message,
         }
-        await self.client.set(key, json.dumps(payload), ex=_PROGRESS_TTL)
+        try:
+            await self.client.set(key, json.dumps(payload), ex=_PROGRESS_TTL)
+        except Exception as exc:
+            logger.exception(
+                "diag_redis_set_progress_failed",
+                job_id=job_id,
+                exc_type=type(exc).__name__,
+                client_is_none=client_is_none,
+                exc_info=True,
+            )
+            raise
 
     async def get_progress(self, job_id: str) -> Optional[dict]:
         """Retrieve cached progress, or None if not found."""

@@ -46,6 +46,18 @@ class Settings(BaseSettings):
     FFMPEG_PATH: str = "ffmpeg"
     FFPROBE_PATH: str = "ffprobe"
 
+    # ── Whisper (whisper.cpp backend — no Python ML dependencies) ────────────
+    # Binary name on PATH or absolute path to the compiled whisper-cli executable
+    WHISPER_CPP_BINARY: str = "whisper-cli"
+    # Absolute or relative path to the GGML model file
+    # Supported: ggml-tiny.en.bin | ggml-base.en.bin | ggml-small.en.bin
+    WHISPER_MODEL_PATH: Path = Path("models/ggml-tiny.en.bin")
+    # CPU thread count passed to whisper.cpp (-t flag)
+    WHISPER_THREADS: int = 4
+    # Language code passed to whisper.cpp (-l flag). Use "en" for .en models.
+    # Set to "" to let whisper.cpp auto-detect (not recommended for .en models).
+    WHISPER_LANGUAGE: str = "en"
+
     # ── CORS ──────────────────────────────────────────────────────────────────
     ALLOWED_ORIGINS: list[str] = ["*"]
 
@@ -62,7 +74,7 @@ class Settings(BaseSettings):
     def is_sqlite(self) -> bool:
         return self.DATABASE_URL.startswith("sqlite")
 
-    @field_validator("UPLOAD_DIR", "PROCESSED_DIR", "LOGS_DIR", mode="before")
+    @field_validator("UPLOAD_DIR", "PROCESSED_DIR", "LOGS_DIR", "WHISPER_MODEL_PATH", mode="before")
     @classmethod
     def coerce_path(cls, v: Any) -> Path:
         return Path(v)
@@ -71,6 +83,8 @@ class Settings(BaseSettings):
     def create_directories(self) -> "Settings":
         for directory in (self.UPLOAD_DIR, self.PROCESSED_DIR, self.LOGS_DIR):
             directory.mkdir(parents=True, exist_ok=True)
+        # Ensure the model's parent directory exists so users can drop files in
+        self.WHISPER_MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
         return self
 
 

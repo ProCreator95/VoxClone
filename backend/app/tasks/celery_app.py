@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
+
 from celery import Celery
-from celery.signals import worker_ready, worker_shutdown
+from celery.signals import worker_process_init, worker_process_shutdown, worker_ready, worker_shutdown
 
 from app.core.config import get_settings
 from app.core.logging import get_logger, setup_logging
@@ -58,6 +60,24 @@ def create_celery_app() -> Celery:
 
 
 celery_app = create_celery_app()
+
+
+@worker_process_init.connect
+def on_worker_process_init(**kwargs) -> None:
+    """Called inside each forked worker process — FastAPI lifespan never runs here."""
+    setup_logging()
+    from app.services.redis_service import redis_service  # local import avoids circular issues
+
+    asyncio.run(redis_service.connect())
+    logger.info("celery_worker_process_redis_connected")
+
+
+@worker_process_shutdown.connect
+def on_worker_process_shutdown(**kwargs) -> None:
+    from app.services.redis_service import redis_service
+
+    asyncio.run(redis_service.disconnect())
+    logger.info("celery_worker_process_redis_disconnected")
 
 
 @worker_ready.connect
