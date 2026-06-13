@@ -21,7 +21,7 @@ from celery import Task
 from app.core.config import get_settings
 from app.core.logging import get_logger, setup_logging
 from app.database.session import get_db_context
-from app.models.job import JobStatus
+from app.models.job import JobStatus, JobType
 from app.models.media import MediaType
 from app.services.ffmpeg_service import FFmpegService
 from app.services.job_service import JobService
@@ -369,41 +369,271 @@ def generate_subtitles_task(self: Task, job_id: str) -> dict:
     max_retries=2,
 )
 def burn_subtitles_task(self: Task, job_id: str) -> dict:
-    """Burn SRT subtitles into video (Pipeline 1 — Step 3)."""
+    """
+    Burn SRT subtitles into video using FFmpeg (Phase 3).
+
+    Parameters (passed via job.parameters at job-creation time):
+        subtitle_job_id (str, primary):
+            UUID of a completed subtitle_generation job.  The task looks up
+            that job's parameters["result_files"]["srt"] to resolve the SRT
+            path automatically.  This is the intended production workflow.
+
+        srt_path (str, testing only):
+            Absolute path to an SRT file on disk.  Use only for local testing
+            when you already know the server-side path.
+
+        font_size  (int,   default 24)
+        font_name  (str,   default "Arial")
+        font_color (str,   default "&H00FFFFFF&"  — white, ASS hex)
+        outline_color (str, default "&H00000000&" — black, ASS hex)
+
+    Output:
+        processed/<job_id>_subtitled.mp4  — H.264 video, audio stream-copied.
+        result_path set to the above path.
+        parameters["result_files"]["burned_video"] set to the same path.
+        parameters["subtitle_job_id"] preserved for traceability.
+    """
 
     async def _run() -> dict:
-        setup_logging()
-        ffmpeg = FFmpegService()
-
-        async with get_db_context() as db:
-            job_svc = JobService(db)
-            job = await job_svc.mark_started(job_id, self.request.id)
-            media = job.media
-
+        # ── TOP-LEVEL SAFETY NET ──────────────────────────────────────────────
+        # Catches anything that escapes the inner pipeline block; guarantees a
+        # final traceback is always visible in the worker log.
         try:
-            params = job.parameters or {}
-            srt_path = Path(params.get("srt_path", ""))
-            if not srt_path.exists():
-                raise FileNotFoundError(f"SRT file not found: {srt_path}")
+            # ── DIAG 1: task entry ────────────────────────────────────────────
+            logger.info(
+                "diag_burn_task_entry",
+                job_id=job_id,
+                celery_request_id=self.request.id,
+                celery_hostname=self.request.hostname,
+            )
 
-            video_path = Path(media.file_path)
-            output_filename = f"{job_id}_subtitled.mp4"
-            output_path = settings.PROCESSED_DIR / output_filename
+            setup_logging()
+            ffmpeg = FFmpegService()
 
-            await _update_progress(job_id, 20, "Burning subtitles with FFmpeg")
-            await ffmpeg.burn_subtitles(video_path, srt_path, output_path)
+            # ── 1. Load job + media, mark started ────────────────────────────
+            # mark_started() calls get_by_id_with_media() (selectinload) so
+            # job.media is fully populated before the session closes.
+            # expire_on_commit=False on AsyncSessionLocal means the loaded
+            # attributes survive outside the get_db_context block.
+            logger.info("diag_burn_entering_db_context_mark_started", job_id=job_id)
+            try:
+                async with get_db_context() as db:
+                    logger.info(
+                        "diag_burn_before_mark_started",
+                        job_id=job_id,
+                        celery_task_id=self.request.id,
+                    )
+                    job = await JobService(db).mark_started(job_id, self.request.id)
+                    logger.info(
+                        "diag_burn_mark_started_returned",
+                        job_id=job_id,
+                        job_status=job.status,
+                        job_media_id=job.media_id,
+                    )
+                    media = job.media
+                    params: dict = dict(job.parameters or {})
+                    logger.info(
+                        "diag_burn_media_loaded",
+                        job_id=job_id,
+                        media_id=media.id if media else None,
+                        media_type=media.media_type if media else None,
+                        media_path=media.file_path if media else None,
+                        params_keys=list(params.keys()),
+                    )
+            except Exception as exc:
+                logger.exception(
+                    "diag_burn_mark_started_block_failed",
+                    job_id=job_id,
+                    exc_type=type(exc).__name__,
+                )
+                raise
 
-            await _update_progress(job_id, 90, "Finalising output")
+            # ── 2-6. Pipeline ─────────────────────────────────────────────────
+            try:
+                # ── 2. Resolve SRT path ───────────────────────────────────────
+                await _update_progress(job_id, 5, "Resolving SRT source")
 
-            async with get_db_context() as db:
-                await JobService(db).mark_completed(job_id, str(output_path))
+                subtitle_job_id: str = params.get("subtitle_job_id", "")
+                srt_path_str: str = params.get("srt_path", "")
 
-            return {"job_id": job_id, "result_path": str(output_path)}
+                if subtitle_job_id:
+                    # ── PRIMARY WORKFLOW ──────────────────────────────────────
+                    # Look up the SRT path from a completed subtitle_generation job.
+                    logger.info(
+                        "diag_burn_resolving_from_subtitle_job_id",
+                        job_id=job_id,
+                        subtitle_job_id=subtitle_job_id,
+                    )
+                    async with get_db_context() as db:
+                        prior_job = await JobService(db).get_by_id(subtitle_job_id)
 
-        except Exception as exc:
-            logger.exception("burn_subtitles_task_failed", job_id=job_id)
-            async with get_db_context() as db:
-                await JobService(db).mark_failed(job_id, str(exc))
+                    if prior_job.status != JobStatus.COMPLETED:
+                        raise ValueError(
+                            f"subtitle_job_id '{subtitle_job_id}' is in status "
+                            f"'{prior_job.status}' — must be 'completed'."
+                        )
+                    if prior_job.job_type != JobType.SUBTITLE_GENERATION:
+                        raise ValueError(
+                            f"subtitle_job_id '{subtitle_job_id}' has job_type "
+                            f"'{prior_job.job_type}' — must be 'subtitle_generation'."
+                        )
+
+                    prior_result_files: dict = (prior_job.parameters or {}).get("result_files", {})
+                    srt_path_str = prior_result_files.get("srt", "")
+                    if not srt_path_str:
+                        raise ValueError(
+                            f"subtitle_job '{subtitle_job_id}' has no 'srt' "
+                            "entry in result_files — was it generated correctly?"
+                        )
+
+                    srt_path = Path(srt_path_str)
+                    # Keep subtitle_job_id in params so it is visible in the
+                    # completed job record for traceability and debugging.
+                    params["subtitle_job_id"] = subtitle_job_id
+
+                    logger.info(
+                        "diag_burn_srt_resolved_from_subtitle_job",
+                        job_id=job_id,
+                        subtitle_job_id=subtitle_job_id,
+                        srt_path=str(srt_path),
+                    )
+
+                elif srt_path_str:
+                    # ── TESTING / TOOLING MODE ────────────────────────────────
+                    # Caller supplies an absolute server-side path directly.
+                    srt_path = Path(srt_path_str)
+                    logger.info(
+                        "diag_burn_srt_path_direct",
+                        job_id=job_id,
+                        srt_path=str(srt_path),
+                    )
+
+                else:
+                    raise ValueError(
+                        "burn_subtitles_task requires 'subtitle_job_id' (primary workflow) "
+                        "or 'srt_path' (testing only) in job parameters."
+                    )
+
+                # ── 3. Validate inputs ────────────────────────────────────────
+                await _update_progress(job_id, 15, "Validating inputs")
+
+                logger.info(
+                    "diag_burn_validation_start",
+                    job_id=job_id,
+                    media_type=media.media_type,
+                    media_path=media.file_path,
+                    srt_path=str(srt_path),
+                )
+
+                if media.media_type != MediaType.VIDEO:
+                    raise ValueError(
+                        f"Subtitle burn requires a video file; "
+                        f"source media has media_type='{media.media_type}'."
+                    )
+
+                video_path = Path(media.file_path)
+                if not video_path.exists():
+                    raise FileNotFoundError(f"Source video not found: {video_path}")
+
+                if not srt_path.exists():
+                    raise FileNotFoundError(f"SRT file not found: {srt_path}")
+
+                logger.info(
+                    "diag_burn_validation_passed",
+                    job_id=job_id,
+                    video_path=str(video_path),
+                    srt_path=str(srt_path),
+                    video_size_bytes=video_path.stat().st_size,
+                    srt_size_bytes=srt_path.stat().st_size,
+                )
+
+                # ── 4. Build output path ──────────────────────────────────────
+                output_filename = f"{job_id}_subtitled.mp4"
+                output_path = settings.PROCESSED_DIR / output_filename
+
+                # ── 5. Burn subtitles via FFmpeg ──────────────────────────────
+                await _update_progress(job_id, 20, "Burning subtitles with FFmpeg")
+
+                logger.info(
+                    "diag_burn_ffmpeg_start",
+                    job_id=job_id,
+                    video_path=str(video_path),
+                    srt_path=str(srt_path),
+                    output_path=str(output_path),
+                    font_size=params.get("font_size", 24),
+                    font_name=params.get("font_name", "Arial"),
+                )
+
+                await ffmpeg.burn_subtitles(
+                    video_path,
+                    srt_path,
+                    output_path,
+                    font_size=int(params.get("font_size", 24)),
+                    font_name=str(params.get("font_name", "Arial")),
+                    font_color=str(params.get("font_color", "&H00FFFFFF&")),
+                    outline_color=str(params.get("outline_color", "&H00000000&")),
+                )
+
+                logger.info(
+                    "diag_burn_ffmpeg_done",
+                    job_id=job_id,
+                    output_path=str(output_path),
+                    output_exists=output_path.exists(),
+                    output_size_bytes=(
+                        output_path.stat().st_size if output_path.exists() else 0
+                    ),
+                )
+
+                await _update_progress(job_id, 90, "Finalising output")
+
+                # ── 6. Persist result ─────────────────────────────────────────
+                params["result_files"] = {"burned_video": str(output_path)}
+
+                logger.info(
+                    "diag_burn_persisting_completion",
+                    job_id=job_id,
+                    result_path=str(output_path),
+                    params_keys=list(params.keys()),
+                )
+
+                async with get_db_context() as db:
+                    job_svc = JobService(db)
+                    await job_svc.update(job_id, parameters=params)
+                    await job_svc.mark_completed(job_id, str(output_path))
+
+                logger.info(
+                    "burn_subtitles_task_done",
+                    job_id=job_id,
+                    output=str(output_path),
+                )
+                return {"job_id": job_id, "result_path": str(output_path)}
+
+            except Exception as exc:
+                logger.exception(
+                    "burn_subtitles_task_pipeline_failed",
+                    job_id=job_id,
+                    exc_type=type(exc).__name__,
+                    exc_message=str(exc),
+                )
+                try:
+                    async with get_db_context() as db:
+                        await JobService(db).mark_failed(job_id, str(exc))
+                except Exception as mark_failed_exc:
+                    logger.exception(
+                        "diag_burn_mark_failed_itself_failed",
+                        job_id=job_id,
+                        original_exc_type=type(exc).__name__,
+                        mark_failed_exc_type=type(mark_failed_exc).__name__,
+                    )
+                raise
+
+        except Exception as top_exc:
+            logger.exception(
+                "diag_burn_run_top_level_exception",
+                job_id=job_id,
+                exc_type=type(top_exc).__name__,
+                exc_message=str(top_exc),
+            )
             raise
 
     return asyncio.run(_run())

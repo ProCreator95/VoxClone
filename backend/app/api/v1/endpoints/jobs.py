@@ -198,3 +198,61 @@ async def download_subtitle_format(
         filename=filename,
         media_type=_SUBTITLE_MIME[format_type],
     )
+
+
+@router.get(
+    "/{job_id}/download/video",
+    summary="Download the burned-in subtitle video",
+    description=(
+        "Download the hardcoded-subtitle MP4 produced by a `subtitle_burn` job.\n\n"
+        "Only available for completed `subtitle_burn` jobs.  "
+        "Use `GET /jobs/{id}/result` as a generic alternative."
+    ),
+)
+async def download_burned_video(
+    job_id: str,
+    job_svc: JobService = Depends(get_job_service),
+) -> FileResponse:
+    job = await job_svc.get_by_id(job_id)
+
+    if job.job_type != JobType.SUBTITLE_BURN:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Job '{job_id}' is of type '{job.job_type}', "
+                "not 'subtitle_burn'. "
+                "Use /jobs/{id}/download/{transcript|srt|vtt} for subtitle_generation jobs."
+            ),
+        )
+
+    if job.status != JobStatus.COMPLETED:
+        raise ResultNotReadyError(job_id=job_id, current_status=job.status)
+
+    result_files: dict = (job.parameters or {}).get("result_files", {})
+    file_path_str = result_files.get("burned_video")
+
+    # Graceful fallback for jobs completed before result_files was introduced
+    if not file_path_str and job.result_path:
+        file_path_str = job.result_path
+
+    if not file_path_str:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=(
+                f"Burned video path is not recorded for job '{job_id}'. "
+                "The job may have been created with an older version of VoxClone."
+            ),
+        )
+
+    path = Path(file_path_str)
+    if not path.exists():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Burned video file has been deleted from disk.",
+        )
+
+    return FileResponse(
+        path=str(path),
+        filename=f"{job_id}_subtitled.mp4",
+        media_type="video/mp4",
+    )

@@ -151,26 +151,76 @@ class FFmpegService:
 
     # ── Subtitle Burning ──────────────────────────────────────────────────────
 
+    @staticmethod
+    def _escape_filter_path(path: Path) -> str:
+        """Escape a file path for safe embedding in an FFmpeg filtergraph value.
+
+        FFmpeg filter syntax uses ':' as the option separator and '\\' as the
+        escape character.  All three characters that carry special meaning must
+        be escaped before the path is embedded in a filter string.  The order
+        matters: backslash must be doubled first so that subsequent replacements
+        do not double-escape the newly inserted backslashes.
+
+        This is required on this machine because PROCESSED_DIR resolves to a
+        path containing a space ('Mustafa projects'), and any future colon in
+        the path would silently corrupt the filter.
+        """
+        s = str(path)
+        s = s.replace("\\", "\\\\")  # must come first
+        s = s.replace(":", "\\:")
+        s = s.replace("'", "\\'")
+        return s
+
     async def burn_subtitles(
         self,
         video_path: Path,
         srt_path: Path,
         output_path: Path,
         font_size: int = 24,
+        font_name: str = "Arial",
+        font_color: str = "&H00FFFFFF&",    # white, ASS hex format
+        outline_color: str = "&H00000000&", # black outline, ASS hex format
     ) -> None:
-        """Burn SRT subtitles into video, re-encoding only video stream."""
-        subtitle_filter = (
-            f"subtitles={str(srt_path)}:force_style='FontSize={font_size}'"
+        """Burn SRT subtitles into video, re-encoding the video stream as H.264.
+
+        Audio is stream-copied (no re-encode).  Video is re-encoded with
+        libx264 at CRF 23 (visually lossless for typical content).
+
+        Style args use ASS colour format: &HAABBGGRR& (alpha, blue, green, red).
+        Common values:
+            white  &H00FFFFFF&
+            yellow &H0000FFFF&
+            black  &H00000000&
+        """
+        escaped = self._escape_filter_path(srt_path)
+        force_style = (
+            f"FontName={font_name},"
+            f"FontSize={font_size},"
+            f"PrimaryColour={font_color},"
+            f"OutlineColour={outline_color},"
+            f"Outline=1,"
+            f"Shadow=0"
         )
+        subtitle_filter = f"subtitles={escaped}:force_style='{force_style}'"
         cmd = [
             self.ffmpeg,
             "-i", str(video_path),
             "-vf", subtitle_filter,
+            "-c:v", "libx264",
+            "-crf", "23",
+            "-preset", "fast",
             "-c:a", "copy",
             "-y",
             str(output_path),
         ]
-        logger.info("burn_subtitles_start", src=str(video_path), srt=str(srt_path))
+        logger.info(
+            "burn_subtitles_start",
+            src=str(video_path),
+            srt=str(srt_path),
+            dst=str(output_path),
+            font_size=font_size,
+            font_name=font_name,
+        )
         await _run(cmd, f"Subtitle burning failed for {video_path.name}")
         logger.info("burn_subtitles_done", dst=str(output_path))
 
