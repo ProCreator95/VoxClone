@@ -1,8 +1,9 @@
 # VoxClone — Current Project State
 
-**Date:** 2026-06-13
+**Date:** 2026-06-14
 **Branch:** `feature/subtitle-pipeline`
-**Last commit:** `52c5d3e Phase 1 foundation validated`
+**Last commit:** `94f77e0 Phase 2 subtitle generation complete`
+**Tags:** `v0.1-foundation` (Phase 1), `phase2-subtitles-working` (Phase 2)
 
 ---
 
@@ -115,16 +116,24 @@ VoxClone/
 | Celery task dispatch | ✅ Working | Tasks are received by the worker |
 | Download endpoint | ✅ Working | `GET /jobs/{id}/result` returns FileResponse |
 
-### Phase 2 — In Progress
+### Phase 2 — Complete ✅
 
 | Component | Status | Notes |
 |-----------|--------|-------|
-| `WhisperService` | ✅ Implemented | whisper.cpp subprocess, validates binary + model |
-| `TranscriptResult` | ✅ Implemented | `.to_srt()`, `.to_vtt()`, `.to_txt()` correct |
-| Whisper config settings | ✅ Implemented | `WHISPER_CPP_BINARY`, `WHISPER_MODEL_PATH`, `WHISPER_THREADS` |
-| `generate_subtitles_task` | ❌ Failing | See KNOWN_BUGS_AND_ROOT_CAUSES.md |
-| Subtitle download endpoints | ✅ Implemented | `/jobs/{id}/download/{transcript,srt,vtt}` |
-| Diagnostic logging | ✅ Added | `diag_*` events on all failure paths |
+| `WhisperService` | ✅ Working | whisper.cpp subprocess, validates binary + model |
+| `TranscriptResult` | ✅ Working | `.to_srt()`, `.to_vtt()`, `.to_txt()` correct |
+| Whisper config settings | ✅ Working | `WHISPER_CPP_BINARY`, `WHISPER_MODEL_PATH`, `WHISPER_THREADS` |
+| `generate_subtitles_task` | ✅ Working | Produces SRT/VTT/TXT via whisper.cpp |
+| Subtitle download endpoints | ✅ Working | `/jobs/{id}/download/{transcript,srt,vtt}` |
+| Diagnostic logging | ✅ In place | `diag_*` events on all code paths |
+
+### Three bugs fixed in this session
+
+| Bug | Fix applied in |
+|-----|---------------|
+| Redis not connected in Celery workers | `app/tasks/celery_app.py` — `worker_process_init` signal |
+| `MissingGreenlet` on `job.media` lazy-load | `app/services/job_service.py` — `get_by_id_with_media()` with `selectinload` |
+| `libwhisper.so.1 not found` / `libggml.so.0 not found` | `app/services/whisper_service.py` — `_build_subprocess_env()` sets `LD_LIBRARY_PATH` |
 
 ### Infrastructure Readiness
 
@@ -146,38 +155,12 @@ VoxClone/
 ### Modified (not yet committed)
 
 ```
-backend/.env.example
-backend/app/api/v1/endpoints/jobs.py
-backend/app/core/config.py
-backend/app/services/job_service.py
-backend/app/services/redis_service.py
-backend/app/tasks/media_tasks.py
-backend/requirements.txt
+(none — working tree is clean)
 ```
 
-### Untracked (not yet added)
+### Tags
 
 ```
-backend/app/services/whisper_service.py
-docs/context/
-docs/reports/
-docs/testing/
-tools/
-```
-
-### Recommended commit strategy
-
-Do **not** commit until bugs 1 and 2 are fixed and the subtitle pipeline produces a real SRT file. Then commit everything as:
-
-```
-git add .
-git commit -m "Phase 2: whisper.cpp subtitle pipeline
-
-- WhisperService wrapping whisper.cpp CLI subprocess
-- generate_subtitles_task: video → audio → whisper → SRT/VTT/TXT
-- Fix Redis connection in Celery worker (worker_process_init signal)
-- Fix SQLAlchemy lazy-load: selectinload(Job.media) in mark_started
-- Add subtitle download endpoints /jobs/{id}/download/{transcript,srt,vtt}
-- Diagnostic logging on all failure paths
-- Full test suite and context documentation"
+v0.1-foundation            → Phase 1 complete
+phase2-subtitles-working   → Phase 2 complete (current HEAD = 94f77e0)
 ```

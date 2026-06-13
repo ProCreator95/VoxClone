@@ -2,11 +2,11 @@
 
 **Branch:** `feature/subtitle-pipeline`
 **Date documented:** 2026-06-13
-**Status:** Bugs identified, fixes not yet applied
+**Fixes applied:** 2026-06-14 — all three bugs resolved, pipeline working
 
 ---
 
-## Bug 1 — RedisService not connected inside Celery workers (CRITICAL)
+## Bug 1 — RedisService not connected inside Celery workers ✅ FIXED
 
 ### Symptom
 
@@ -68,26 +68,32 @@ Even if `mark_failed()` were called, it also calls `redis_service.set_progress()
 | `app/services/job_service.py` | `mark_started()` — calls `redis_service.set_progress()` after DB flush |
 | `app/tasks/media_tasks.py` | `generate_subtitles_task` — `mark_started()` is outside the task try/except |
 
-### Fix Required
-
-Add a Celery `worker_process_init` signal handler to connect Redis in each worker process:
+### Fix Applied (`app/tasks/celery_app.py`)
 
 ```python
-# app/tasks/celery_app.py  — add this:
-from celery.signals import worker_process_init
+import asyncio
+from celery.signals import worker_process_init, worker_process_shutdown
 
 @worker_process_init.connect
-def init_worker_process(sender=None, **kwargs):
-    import asyncio
+def on_worker_process_init(**kwargs) -> None:
+    """Called inside each forked worker process."""
+    setup_logging()
     from app.services.redis_service import redis_service
     asyncio.run(redis_service.connect())
+    logger.info("celery_worker_process_redis_connected")
+
+@worker_process_shutdown.connect
+def on_worker_process_shutdown(**kwargs) -> None:
+    from app.services.redis_service import redis_service
+    asyncio.run(redis_service.disconnect())
+    logger.info("celery_worker_process_redis_disconnected")
 ```
 
-Or — make `redis_service` lazy: auto-connect on first use instead of requiring explicit `connect()`.
+**Verification:** Celery log shows `celery_worker_process_redis_connected` once per worker process on startup.
 
 ---
 
-## Bug 2 — SQLAlchemy async lazy-loading of `job.media` (SECONDARY)
+## Bug 2 — SQLAlchemy async lazy-loading of `job.media` ✅ FIXED
 
 ### Symptom
 
@@ -125,56 +131,87 @@ can't call await_only() here. Was IO attempted in an unexpected place?
 | `app/services/job_service.py` | `get_by_id()` — no eager loading options |
 | `app/tasks/media_tasks.py` | `media = job.media` — accesses lazy relationship |
 
-### Fix Required
+### Fix Applied (`app/services/job_service.py`)
 
-**Option A (preferred):** Eager-load `media` in `get_by_id()` when called from a task context:
+A new method `get_by_id_with_media` was added that uses `selectinload(Job.media)`. `mark_started` now calls this instead of `get_by_id`:
 
 ```python
-# In job_service.py — add an optional eager_load parameter:
 from sqlalchemy.orm import selectinload
 
-async def get_by_id(self, job_id: str, load_media: bool = False) -> Job:
-    stmt = select(Job).where(Job.id == job_id)
-    if load_media:
-        stmt = stmt.options(selectinload(Job.media))
-    result = await self._db.execute(stmt)
-    ...
+async def get_by_id_with_media(self, job_id: str) -> Job:
+    result = await self._db.execute(
+        select(Job)
+        .options(selectinload(Job.media))
+        .where(Job.id == job_id)
+    )
+    job = result.scalar_one_or_none()
+    if job is None:
+        raise JobNotFoundError(job_id)
+    logger.info("diag_job_media_preloaded",
+                job_id=job_id,
+                media_id=job.media.id if job.media else None,
+                media_type=job.media.media_type if job.media else None)
+    return job
 ```
 
-**Option B:** Change the relationship to `lazy="raise"` globally to catch all such accesses early, and use explicit `selectinload` everywhere.
+`mark_started` calls `get_by_id_with_media` — so `job.media` is a plain Python attribute access from that point forward. `expire_on_commit=False` on `AsyncSessionLocal` means the `Media` object remains accessible after the session closes.
 
-**Option C (quickest):** Keep `mark_started()` as-is, but load the media in a **separate DB call** after `mark_started()` returns:
+**Verification:** Celery log shows `diag_job_media_preloaded` with non-None `media_id` and `media_type`.
+
+---
+
+## Bug 3 — whisper.cpp shared libraries not found ✅ FIXED
+
+### Symptom
+
+After Bugs 1 and 2 were fixed, whisper.cpp still failed:
+
+```
+libwhisper.so.1 => not found
+libggml.so.0 => not found
+```
+
+The binary at `tools/whisper.cpp/build/bin/whisper-cli` links against shared libraries in its own build tree. Without `LD_LIBRARY_PATH` pointing to those directories, the dynamic linker cannot find them.
+
+### Affected Code
+
+| File | Location |
+|------|----------|
+| `app/services/whisper_service.py` | `_run_subprocess` — `asyncio.create_subprocess_exec` called without `env=` |
+
+### Fix Applied (`app/services/whisper_service.py`)
+
+A new static method `_build_subprocess_env` derives the library directories from the binary path using `pathlib`, builds an env dict, and passes it to the subprocess:
 
 ```python
-async with get_db_context() as db:
-    job = await JobService(db).mark_started(job_id, self.request.id)
-    # Explicitly reload with media
-    result = await db.execute(
-        select(Job).where(Job.id == job_id).options(selectinload(Job.media))
+@staticmethod
+def _build_subprocess_env(binary: str) -> dict[str, str]:
+    build_dir = Path(binary).parent.parent  # .../build/bin → .../build
+    whisper_lib_dir = build_dir / "src"          # libwhisper.so.1
+    ggml_lib_dir    = build_dir / "ggml" / "src" # libggml.so.0
+
+    env = os.environ.copy()
+    existing = env.get("LD_LIBRARY_PATH", "")
+    env["LD_LIBRARY_PATH"] = (
+        f"{whisper_lib_dir}:{ggml_lib_dir}"
+        + (f":{existing}" if existing else "")
     )
-    job_with_media = result.scalar_one()
-    media = job_with_media.media
-    params = dict(job_with_media.parameters or {})
+    return env
 ```
+
+`asyncio.create_subprocess_exec` now receives `env=self._build_subprocess_env(binary)`.
+
+**Example resolved paths** (given `WHISPER_CPP_BINARY=../tools/whisper.cpp/build/bin/whisper-cli`):
+```
+LD_LIBRARY_PATH=.../tools/whisper.cpp/build/src:.../tools/whisper.cpp/build/ggml/src
+```
+
+**Verification:** Celery log shows `whisper_cpp_ld_library_path` (DEBUG level) with the two paths; job reaches `subtitle_task_done`.
 
 ---
 
-## Bug Order for Fixing
+## Bug Fix Order Applied
 
 ```
-Fix Bug 1 first → retest → Bug 2 will surface if present → fix Bug 2 → retest → pipeline runs
+Bug 1 (Redis) → Bug 2 (MissingGreenlet) → Bug 3 (LD_LIBRARY_PATH) → pipeline working
 ```
-
-Do not attempt to fix both simultaneously. Fixing one at a time allows you to verify each fix independently.
-
----
-
-## Diagnostic Logging Already Added
-
-The following diagnostic logs are already in place (added 2026-06-13):
-
-- `app/tasks/media_tasks.py` — 13 `diag_*` checkpoints around task entry, service creation, DB context, `mark_started`, and `job.media` access
-- `app/services/job_service.py` — 9 checkpoints inside `mark_started()` including `redis_client_is_none` log
-- `app/services/redis_service.py` — `diag_redis_client_is_none` ERROR log when `_client is None` before `set_progress()`
-
-Run Celery with `--loglevel=info` to see all `diag_*` events.
