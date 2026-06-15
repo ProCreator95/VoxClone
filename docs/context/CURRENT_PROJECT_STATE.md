@@ -1,8 +1,8 @@
 # VoxClone — Current Project State
 
-**Date:** 2026-06-14
-**Branch:** `feature/subtitle-burn`
-**Last commit:** `2f9f643 Phase 3: subtitle burn-in complete`
+**Date:** 2026-06-15
+**Branch:** `feature/karaoke-generation`
+**Last commit:** `2f9f643 Phase 3: subtitle burn-in complete` (Phase 4 staged, pre-commit engineering review in progress)
 **Tags:** `v0.1-foundation` (Phase 1) · `phase2-subtitles-working` (Phase 2) · `phase3-subtitle-burn` (Phase 3)
 
 ---
@@ -141,7 +141,27 @@ VoxClone/
 | `GET /jobs/{id}/download/video` | ✅ | Typed MP4 download endpoint |
 | 16 diagnostic log events | ✅ | `diag_burn_*` events at every major step |
 
-### Bugs Fixed Across Phases 2–3
+### Phase 4 — Karaoke Generation ✅ COMPLETE (pre-commit)
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| `WordTimestamp` / `WhisperSegment.words` | ✅ | New dataclasses for per-word timing |
+| `WhisperService.transcribe(word_timestamps=True)` | ✅ | Uses `--output-json-full` + BPE token grouping |
+| `_tokens_to_words()` | ✅ | Groups BPE tokens into words by leading-space convention |
+| `TranscriptResult.to_ass()` | ✅ | ASS with `\kf` karaoke timing; pre-roll gap handled cleanly |
+| `FFmpegService.burn_ass()` | ✅ | ASS burn; `force_style` intentionally omitted |
+| `karaoke_task` | ✅ | Full pipeline: validate → extract → transcribe → ASS → MP4 |
+| `IMPLEMENTED_JOB_TYPES` guard | ✅ | Unimplemented types (voice_replacement etc.) return 422 not 500 |
+| `GET /jobs/{id}/download/ass` | ✅ | ASS file download |
+| `GET /jobs/{id}/download/karaoke-video` | ✅ | Karaoke MP4 download |
+| End-to-end validation | ✅ | Job `0e44f8ef-0867-437b-a1fc-c9e8d4d90a08` — status `completed` |
+
+**Known limitation:** `ggml-tiny.en.bin` produces 20–30 s gaps during instrumental
+sections of music videos. This is a Whisper model limitation, not a code bug.
+Switch to `ggml-base.en.bin` or `ggml-small.en.bin` for music content.
+See `KNOWN_BUGS_AND_ROOT_CAUSES.md` for the full investigation.
+
+### Bugs Fixed Across Phases 2–4
 
 | # | Bug | Fixed in |
 |---|-----|---------|
@@ -150,6 +170,8 @@ VoxClone/
 | 3 | `libwhisper.so.1 not found` | `whisper_service.py` — `_build_subprocess_env()` |
 | 4 | FFmpeg filter path not escaped (space in project path) | `ffmpeg_service.py` — `_escape_filter_path()` |
 | 5 | No explicit video codec in burn command | `ffmpeg_service.py` — added `-c:v libx264 -crf 23 -preset fast` |
+| 6 | FastAPI route ordering — `/download/video` shadowed | `jobs.py` — literal routes before parameterised catch-all |
+| 7 | `voice_replacement`/`voice_clone` returned HTTP 500 | `jobs.py` + `media_tasks.py` — `IMPLEMENTED_JOB_TYPES` pre-flight |
 
 ### Infrastructure Readiness
 
@@ -212,15 +234,65 @@ Audio: opus — stream-copied, no re-encode
 
 ---
 
+## Phase 4 Validation Evidence
+
+Validated end-to-end on 2026-06-14.
+
+### Run identifiers
+
+| Field | Value |
+|-------|-------|
+| Job ID | `0e44f8ef-0867-437b-a1fc-c9e8d4d90a08` |
+| Status | `completed` |
+| Progress | `100` |
+| Detected language | `en` |
+| Segment count | 76 |
+| Word count | present (word_timestamps=True) |
+
+### Generated output files
+
+```
+processed/0e44f8ef-0867-437b-a1fc-c9e8d4d90a08_audio.wav       (~6.9 MB WAV)
+processed/0e44f8ef-0867-437b-a1fc-c9e8d4d90a08_karaoke.ass     (10 KB ASS — 76 Dialogue lines)
+processed/0e44f8ef-0867-437b-a1fc-c9e8d4d90a08_karaoke.mp4     (92 MB H.264 MP4)
+```
+
+### Verified components
+
+| Component | Verified |
+|-----------|---------|
+| Video-only validation (MediaType.VIDEO required) | ✅ |
+| FFmpeg audio extraction (16kHz mono WAV) | ✅ |
+| `--output-json-full` transcription | ✅ |
+| BPE token → word grouping (`_tokens_to_words`) | ✅ |
+| ASS file generation with `\kf` tags | ✅ |
+| `burn_ass()` — H.264 re-encode, ASS filter, no `force_style` | ✅ |
+| `parameters["result_files"]["ass"]` and `["video"]` written | ✅ |
+| `GET /jobs/{id}/download/ass` returns ASS file | ✅ |
+| `GET /jobs/{id}/download/karaoke-video` returns MP4 | ✅ |
+| `GET /jobs/{id}/result` returns MP4 (generic endpoint) | ✅ |
+
+### FFprobe validation
+
+```
+ffprobe processed/0e44f8ef-0867-437b-a1fc-c9e8d4d90a08_karaoke.mp4
+
+Duration: 00:03:36.56
+Video: h264 (High), yuv420p — karaoke subtitles hardcoded
+Audio: (stream-copied from source)
+```
+
+---
+
 ## Git State
 
-**Branch:** `feature/subtitle-burn`
-**Working tree:** clean
+**Branch:** `feature/karaoke-generation`
+**Working tree:** Phase 4 changes present, pre-commit engineering review complete
 
 ### Commit log
 
 ```
-2f9f643  Phase 3: subtitle burn-in complete       ← HEAD, phase3-subtitle-burn
+2f9f643  Phase 3: subtitle burn-in complete       ← last committed, phase3-subtitle-burn
 19f8cc8  Finalize Phase 2 documentation and handoff
 94f77e0  Phase 2 subtitle generation complete      ← phase2-subtitles-working
 52c5d3e  Phase 1 foundation validated              ← v0.1-foundation
@@ -231,5 +303,6 @@ Audio: opus — stream-copied, no re-encode
 ```
 v0.1-foundation           → Phase 1 complete
 phase2-subtitles-working  → Phase 2 complete
-phase3-subtitle-burn      → Phase 3 complete (current HEAD)
+phase3-subtitle-burn      → Phase 3 complete (last tag)
+phase4-karaoke            → Phase 4 complete (pending commit)
 ```

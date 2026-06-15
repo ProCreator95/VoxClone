@@ -639,27 +639,310 @@ def burn_subtitles_task(self: Task, job_id: str) -> dict:
     return asyncio.run(_run())
 
 
-# ── Task: Karaoke (placeholder) ───────────────────────────────────────────────
+# ── Task: Karaoke Generation ──────────────────────────────────────────────────
 
 @celery_app.task(
     bind=True,
     base=VoxCloneTask,
     name="app.tasks.media_tasks.karaoke_task",
+    max_retries=1,
 )
 def karaoke_task(self: Task, job_id: str) -> dict:
-    """Remove vocals via Demucs (placeholder — implementation TBD)."""
+    """
+    Karaoke pipeline: transcribe with word-level timestamps and burn ASS into video.
+
+    Pipeline:
+        1. Load job + media from DB (eager-loaded to avoid DetachedInstanceError).
+        2. Validate media is a video file — burn_ass() requires a video stream.
+        3. Extract 16kHz mono WAV via FFmpeg.
+        4. Transcribe with word_timestamps=True (--output-json-full).
+        5. Write <job_id>_karaoke.ass with \\kf karaoke timing tags.
+        6. Burn ASS into video via FFmpegService.burn_ass().
+        7. Persist result_files + timing metadata in job.parameters.
+        8. Set job.result_path to the output MP4.
+
+    Parameters (passed via job.parameters at job-creation time):
+        language        (str, optional  — default: WHISPER_LANGUAGE from settings)
+        highlight_color (str, optional  — default: "&H0000FFFF&" yellow, ASS AABBGGRR)
+        base_color      (str, optional  — default: "&H00FFFFFF&" white)
+        font_name       (str, optional  — default: "Arial")
+        font_size       (int, optional  — default: 24)
+
+    Output:
+        processed/<job_id>_audio.wav     — extracted WAV (kept for traceability)
+        processed/<job_id>_karaoke.ass   — ASS subtitle file with \\kf tags
+        processed/<job_id>_karaoke.mp4   — final output (also job.result_path)
+
+    Routing: "ai" queue (defined in celery_app.py task_routes).
+    """
 
     async def _run() -> dict:
-        setup_logging()
-        async with get_db_context() as db:
-            await JobService(db).mark_started(job_id, self.request.id)
-
-        async with get_db_context() as db:
-            await JobService(db).mark_failed(
-                job_id,
-                "Karaoke pipeline not yet implemented. Coming soon.",
+        # ── TOP-LEVEL SAFETY NET ──────────────────────────────────────────────
+        # Mirrors the structure used in generate_subtitles_task and
+        # burn_subtitles_task: a top-level try/except ensures a final traceback
+        # always appears in the worker log, even if inner handlers also re-raise.
+        try:
+            # ── DIAG 1: task entry ────────────────────────────────────────────
+            logger.info(
+                "diag_karaoke_task_entry",
+                job_id=job_id,
+                celery_request_id=self.request.id,
+                celery_hostname=self.request.hostname,
             )
-        return {"job_id": job_id, "status": "not_implemented"}
+
+            setup_logging()
+
+            # ── DIAG 2/3: services ───────────────────────────────────────────
+            logger.info("diag_karaoke_creating_services", job_id=job_id)
+            try:
+                ffmpeg  = FFmpegService()
+                whisper = WhisperService()
+                logger.info(
+                    "diag_karaoke_services_ok",
+                    job_id=job_id,
+                    whisper_binary=settings.WHISPER_CPP_BINARY,
+                    whisper_model=str(settings.WHISPER_MODEL_PATH),
+                )
+            except Exception:
+                logger.exception("diag_karaoke_services_failed", job_id=job_id)
+                raise
+
+            # ── 1. Load job + media, mark started ────────────────────────────
+            # mark_started() calls get_by_id_with_media() which uses selectinload,
+            # so job.media is fully populated before the session closes.
+            # expire_on_commit=False on AsyncSessionLocal means the loaded Media
+            # attributes survive outside the get_db_context block.
+            # Accessing job.media after the session closes without eager loading
+            # raises MissingGreenlet in SQLAlchemy async — see Bug 2.
+            logger.info("diag_karaoke_entering_db_context_mark_started", job_id=job_id)
+            try:
+                async with get_db_context() as db:
+                    logger.info(
+                        "diag_karaoke_before_mark_started",
+                        job_id=job_id,
+                        celery_task_id=self.request.id,
+                    )
+                    job    = await JobService(db).mark_started(job_id, self.request.id)
+                    logger.info(
+                        "diag_karaoke_mark_started_returned",
+                        job_id=job_id,
+                        job_status=job.status,
+                        job_media_id=job.media_id,
+                    )
+                    media  = job.media
+                    params: dict = dict(job.parameters or {})
+                    logger.info(
+                        "diag_karaoke_media_loaded",
+                        job_id=job_id,
+                        media_id=media.id if media else None,
+                        media_type=media.media_type if media else None,
+                        media_path=media.file_path if media else None,
+                        params_keys=list(params.keys()),
+                    )
+            except Exception as exc:
+                logger.exception(
+                    "diag_karaoke_mark_started_block_failed",
+                    job_id=job_id,
+                    exc_type=type(exc).__name__,
+                )
+                raise
+
+            # ── 2-8. Pipeline ─────────────────────────────────────────────────
+            try:
+                await _update_progress(job_id, 5, "Validating source")
+
+                # ── 2. Validate media type ────────────────────────────────────
+                # burn_ass() requires a video stream.  Failing here gives a clear
+                # error message; failing inside FFmpeg produces an opaque
+                # "no video stream" error that is harder to diagnose.
+                if media.media_type != MediaType.VIDEO:
+                    raise ValueError(
+                        f"Karaoke pipeline requires a video file; "
+                        f"source media has media_type='{media.media_type}'. "
+                        "Upload a video file to use karaoke generation."
+                    )
+
+                video_path = Path(media.file_path)
+                if not video_path.exists():
+                    raise FileNotFoundError(f"Source video not found: {video_path}")
+
+                logger.info(
+                    "diag_karaoke_validation_passed",
+                    job_id=job_id,
+                    video_path=str(video_path),
+                    video_size_bytes=video_path.stat().st_size,
+                )
+
+                # ── 3. Extract audio ──────────────────────────────────────────
+                await _update_progress(job_id, 10, "Extracting audio from video")
+
+                audio_path = settings.PROCESSED_DIR / f"{job_id}_audio.wav"
+                logger.info(
+                    "diag_karaoke_before_extract_audio",
+                    job_id=job_id,
+                    video_path=str(video_path),
+                    audio_path=str(audio_path),
+                )
+                await ffmpeg.extract_audio(video_path, audio_path)
+                logger.info(
+                    "diag_karaoke_audio_extracted",
+                    job_id=job_id,
+                    audio_path=str(audio_path),
+                    audio_exists=audio_path.exists(),
+                )
+
+                # ── 4. Transcribe with word-level timestamps ──────────────────
+                await _update_progress(job_id, 25, "Transcribing with word-level timestamps")
+
+                # Language may be overridden per-job via parameters["language"].
+                language: Optional[str] = params.get("language") or None
+                logger.info(
+                    "diag_karaoke_before_transcribe",
+                    job_id=job_id,
+                    audio_path=str(audio_path),
+                    language=language or "auto",
+                    word_timestamps=True,
+                )
+
+                transcript = await whisper.transcribe(
+                    audio_path=audio_path,
+                    language=language,
+                    word_timestamps=True,
+                )
+
+                total_words   = sum(len(seg.words) for seg in transcript.segments)
+                has_words     = total_words > 0
+                segment_count = len(transcript.segments)
+
+                # Log word count regardless of value — zero words is a valid
+                # (if unfortunate) outcome and should be visible in the worker log
+                # so it can be distinguished from a whisper.cpp crash.
+                logger.info(
+                    "diag_karaoke_word_count",
+                    job_id=job_id,
+                    detected_language=transcript.language,
+                    segment_count=segment_count,
+                    word_count=total_words,
+                    has_word_timestamps=has_words,
+                )
+
+                # ── 5. Generate ASS karaoke subtitle file ─────────────────────
+                await _update_progress(job_id, 65, "Generating ASS karaoke subtitle file")
+
+                ass_path    = settings.PROCESSED_DIR / f"{job_id}_karaoke.ass"
+                ass_content = transcript.to_ass(
+                    highlight_color=str(params.get("highlight_color", "&H0000FFFF&")),
+                    base_color=str(params.get("base_color",      "&H00FFFFFF&")),
+                    font_name=str(params.get("font_name",        "Arial")),
+                    font_size=int(params.get("font_size",         24)),
+                )
+                ass_path.write_text(ass_content, encoding="utf-8")
+
+                logger.info(
+                    "diag_karaoke_ass_written",
+                    job_id=job_id,
+                    ass_path=str(ass_path),
+                    ass_size_bytes=ass_path.stat().st_size,
+                    kf_tags_present=has_words,
+                )
+
+                # ── 6. Burn ASS into video ────────────────────────────────────
+                await _update_progress(job_id, 70, "Burning karaoke subtitles into video")
+
+                output_path = settings.PROCESSED_DIR / f"{job_id}_karaoke.mp4"
+
+                logger.info(
+                    "diag_karaoke_ffmpeg_start",
+                    job_id=job_id,
+                    video_path=str(video_path),
+                    ass_path=str(ass_path),
+                    output_path=str(output_path),
+                )
+
+                await ffmpeg.burn_ass(video_path, ass_path, output_path)
+
+                logger.info(
+                    "diag_karaoke_ffmpeg_done",
+                    job_id=job_id,
+                    output_path=str(output_path),
+                    output_exists=output_path.exists(),
+                    output_size_bytes=(
+                        output_path.stat().st_size if output_path.exists() else 0
+                    ),
+                )
+
+                await _update_progress(job_id, 90, "Finalising")
+
+                # ── 7. Persist result ─────────────────────────────────────────
+                # word_count, segment_count, and has_word_timestamps are stored
+                # now so future phases (dubbing, alignment, voice replacement,
+                # lip-sync) can consume per-word timing data without re-running
+                # whisper.cpp on the same media file.
+                params["result_files"] = {
+                    "ass":   str(ass_path),
+                    "video": str(output_path),
+                }
+                params["detected_language"]   = transcript.language
+                params["word_count"]          = total_words
+                params["segment_count"]       = segment_count
+                params["has_word_timestamps"] = has_words
+
+                logger.info(
+                    "diag_karaoke_persisting_completion",
+                    job_id=job_id,
+                    result_path=str(output_path),
+                    word_count=total_words,
+                    segment_count=segment_count,
+                )
+
+                async with get_db_context() as db:
+                    job_svc = JobService(db)
+                    await job_svc.update(job_id, parameters=params)
+                    await job_svc.mark_completed(job_id, str(output_path))
+
+                logger.info(
+                    "karaoke_task_done",
+                    job_id=job_id,
+                    output=str(output_path),
+                    word_count=total_words,
+                    segment_count=segment_count,
+                )
+                return {
+                    "job_id":        job_id,
+                    "result_path":   str(output_path),
+                    "ass":           str(ass_path),
+                    "video":         str(output_path),
+                    "word_count":    total_words,
+                    "segment_count": segment_count,
+                }
+
+            except Exception as exc:
+                logger.exception(
+                    "karaoke_task_pipeline_failed",
+                    job_id=job_id,
+                    exc_type=type(exc).__name__,
+                    exc_message=str(exc),
+                )
+                try:
+                    async with get_db_context() as db:
+                        await JobService(db).mark_failed(job_id, str(exc))
+                except Exception as mark_failed_exc:
+                    logger.exception(
+                        "diag_karaoke_mark_failed_itself_failed",
+                        job_id=job_id,
+                        original_exc_type=type(exc).__name__,
+                        mark_failed_exc_type=type(mark_failed_exc).__name__,
+                    )
+                raise
+
+        except Exception as top_exc:
+            logger.exception(
+                "diag_karaoke_run_top_level_exception",
+                job_id=job_id,
+                exc_type=type(top_exc).__name__,
+                exc_message=str(top_exc),
+            )
+            raise
 
     return asyncio.run(_run())
 
@@ -697,17 +980,36 @@ _TASK_MAP: dict[str, Any] = {
     "subtitle_burn": burn_subtitles_task,
     "karaoke": karaoke_task,
     "audio_enhance": audio_enhance_task,
+    # voice_replacement and voice_clone are defined in JobType.ALL (models/job.py)
+    # but are not yet implemented.  They are intentionally absent from _TASK_MAP.
+    # Adding a task here is the only change needed to make a new job type dispatchable;
+    # the API pre-flight check in jobs.py derives its allowlist from this map.
 }
+
+# Derived from _TASK_MAP so the API pre-flight check stays automatically in sync.
+# Adding any future task to _TASK_MAP above immediately makes it dispatchable
+# without touching the API layer.
+IMPLEMENTED_JOB_TYPES: frozenset[str] = frozenset(_TASK_MAP.keys())
 
 
 def dispatch_job(job_id: str, job_type: str) -> str:
     """
     Dispatch the appropriate Celery task for a given job type.
     Returns the Celery task ID.
+
+    Raises ValueError if job_type has no registered task.  Callers should guard
+    against this with IMPLEMENTED_JOB_TYPES before creating a DB record so that
+    a failed dispatch cannot leave a zombie job in status=queued.
     """
     task_fn = _TASK_MAP.get(job_type)
     if task_fn is None:
-        raise ValueError(f"No task registered for job_type='{job_type}'")
+        # This branch should not be reachable in normal operation because
+        # create_job() in jobs.py checks IMPLEMENTED_JOB_TYPES first.
+        # It is kept as a final safety net for direct/internal callers.
+        raise ValueError(
+            f"No Celery task registered for job_type='{job_type}'. "
+            f"Implemented types: {sorted(IMPLEMENTED_JOB_TYPES)}"
+        )
 
     result = task_fn.delay(job_id)
     logger.info("task_dispatched", job_id=job_id, job_type=job_type, celery_task_id=result.id)

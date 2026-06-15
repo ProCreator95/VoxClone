@@ -14,7 +14,7 @@ from app.schemas.job import JobCreate, JobProgressResponse, JobResponse
 from app.services.job_service import JobService
 from app.services.media_service import MediaService
 from app.services.redis_service import RedisService
-from app.tasks.media_tasks import dispatch_job
+from app.tasks.media_tasks import IMPLEMENTED_JOB_TYPES, dispatch_job
 
 _SUBTITLE_MIME = {
     "transcript": "text/plain",
@@ -46,6 +46,24 @@ async def create_job(
     media_svc: MediaService = Depends(get_media_service),
     job_svc: JobService = Depends(get_job_service),
 ) -> JobResponse:
+    # Guard BEFORE creating the DB record.
+    # JobType.ALL (used by JobCreate.validate_job_type) includes planned-but-not-yet-
+    # implemented types such as voice_replacement and voice_clone.  Without this check,
+    # a valid job record would be created in the DB and then dispatch_job() would raise
+    # ValueError, leaving the job stuck in status=queued (a zombie job) and returning
+    # HTTP 500 to the caller.  Checking IMPLEMENTED_JOB_TYPES first keeps both concerns
+    # separate: the schema layer validates the name is known, this layer validates it is
+    # runnable.  IMPLEMENTED_JOB_TYPES is derived from _TASK_MAP in media_tasks.py, so
+    # adding a new task there automatically makes it available here with no API changes.
+    if payload.job_type not in IMPLEMENTED_JOB_TYPES:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"Job type '{payload.job_type}' is planned but not yet implemented. "
+                f"Currently available: {sorted(IMPLEMENTED_JOB_TYPES)}."
+            ),
+        )
+
     # Validate that the source media exists
     await media_svc.get_by_id(payload.media_id)
 
@@ -138,11 +156,24 @@ async def cancel_job(
     return MessageResponse(message=f"Job '{job_id}' has been cancelled")
 
 
-# ── IMPORTANT: route order matters in FastAPI ─────────────────────────────────
-# download/video MUST be declared before download/{format_type}.
-# FastAPI matches routes in declaration order.  If the parameterised route came
-# first, "video" would be captured as format_type and rejected by the Literal
-# validator before the dedicated handler is ever considered.
+# ── IMPORTANT: route order is load-bearing in FastAPI ────────────────────────
+# FastAPI matches routes in declaration order.  Every literal path segment
+# ("video", "ass", "karaoke-video") MUST be declared before the parameterised
+# catch-all route /download/{format_type}.  If the parameterised route came
+# first, those literal strings would be captured as format_type and rejected
+# by the Literal["transcript","srt","vtt"] validator — HTTP 422 — before the
+# dedicated handler is ever reached.  This cost us one round of debugging in
+# Phase 3 (Bug 6 in KNOWN_BUGS_AND_ROOT_CAUSES.md).
+#
+# When adding a new Phase N download endpoint:
+#   • Declare it ABOVE the /download/{format_type} route.
+#   • Add it to the Required declaration order comment below.
+#
+# Required declaration order (DO NOT REORDER):
+#   1. /download/video           ← Phase 3: subtitle_burn jobs
+#   2. /download/ass             ← Phase 4: karaoke jobs (ASS file)
+#   3. /download/karaoke-video   ← Phase 4: karaoke jobs (MP4)
+#   4. /download/{format_type}   ← must remain LAST
 
 @router.get(
     "/{job_id}/download/video",
@@ -198,6 +229,118 @@ async def download_burned_video(
     return FileResponse(
         path=str(path),
         filename=f"{job_id}_subtitled.mp4",
+        media_type="video/mp4",
+    )
+
+
+@router.get(
+    "/{job_id}/download/ass",
+    summary="Download the ASS karaoke subtitle file",
+    description=(
+        "Download the Advanced SubStation Alpha (ASS) karaoke subtitle file produced "
+        "by a `karaoke` job.  The file contains `\\kf` timing tags for word-level "
+        "highlighting.\n\n"
+        "Only available for completed `karaoke` jobs."
+    ),
+)
+async def download_karaoke_ass(
+    job_id: str,
+    job_svc: JobService = Depends(get_job_service),
+) -> FileResponse:
+    job = await job_svc.get_by_id(job_id)
+
+    if job.job_type != JobType.KARAOKE:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Job '{job_id}' is of type '{job.job_type}', not 'karaoke'. "
+                "Use /jobs/{id}/download/{transcript|srt|vtt} for subtitle_generation jobs."
+            ),
+        )
+
+    if job.status != JobStatus.COMPLETED:
+        raise ResultNotReadyError(job_id=job_id, current_status=job.status)
+
+    result_files: dict = (job.parameters or {}).get("result_files", {})
+    file_path_str = result_files.get("ass")
+
+    if not file_path_str:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=(
+                f"ASS subtitle path is not recorded for job '{job_id}'. "
+                "The job may have been created with an older version of VoxClone."
+            ),
+        )
+
+    path = Path(file_path_str)
+    if not path.exists():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="ASS subtitle file has been deleted from disk.",
+        )
+
+    return FileResponse(
+        path=str(path),
+        filename=f"{job_id}_karaoke.ass",
+        media_type="text/plain",
+    )
+
+
+@router.get(
+    "/{job_id}/download/karaoke-video",
+    summary="Download the karaoke video",
+    description=(
+        "Download the H.264 MP4 with karaoke subtitles burned in, produced by a "
+        "`karaoke` job.\n\n"
+        "Only available for completed `karaoke` jobs.  "
+        "Use `GET /jobs/{id}/download/video` for `subtitle_burn` jobs."
+    ),
+)
+async def download_karaoke_video(
+    job_id: str,
+    job_svc: JobService = Depends(get_job_service),
+) -> FileResponse:
+    job = await job_svc.get_by_id(job_id)
+
+    if job.job_type != JobType.KARAOKE:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Job '{job_id}' is of type '{job.job_type}', not 'karaoke'. "
+                "Use /jobs/{id}/download/video for subtitle_burn jobs."
+            ),
+        )
+
+    if job.status != JobStatus.COMPLETED:
+        raise ResultNotReadyError(job_id=job_id, current_status=job.status)
+
+    result_files: dict = (job.parameters or {}).get("result_files", {})
+    file_path_str = result_files.get("video")
+
+    # Graceful fallback for jobs completed before result_files was introduced
+    if not file_path_str and job.result_path:
+        file_path_str = job.result_path
+
+    if not file_path_str:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=(
+                f"Karaoke video path is not recorded for job '{job_id}'. "
+                "The job may have been created with an older version of VoxClone."
+            ),
+        )
+
+    path = Path(file_path_str)
+    if not path.exists():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Karaoke video file has been deleted from disk.",
+        )
+
+    return FileResponse(
+        path=str(path),
+        filename=f"{job_id}_karaoke.mp4",
         media_type="video/mp4",
     )
 

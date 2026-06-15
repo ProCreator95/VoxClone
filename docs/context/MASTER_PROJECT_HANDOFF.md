@@ -1,10 +1,10 @@
 # VoxClone — Master Project Handoff
 
-**Date:** 2026-06-14  
-**Branch:** `feature/subtitle-burn`  
-**Commit:** `2f9f643 Phase 3: subtitle burn-in complete`  
+**Date:** 2026-06-15  
+**Branch:** `feature/karaoke-generation`  
+**Commit:** `2f9f643 Phase 3: subtitle burn-in complete` (Phase 4 not yet committed — pre-commit review in progress)  
 **Tags:** `v0.1-foundation` (Phase 1) · `phase2-subtitles-working` (Phase 2) · `phase3-subtitle-burn` (Phase 3)  
-**Working tree:** clean
+**Working tree:** Phase 4 changes staged, awaiting commit
 
 > This document is completely self-contained. A new developer can continue
 > the project using only this file.
@@ -275,6 +275,9 @@ Base URL: `http://localhost:8000/api/v1`
 | GET | `/jobs/{id}/download/transcript` | Download .txt transcript (subtitle jobs) |
 | GET | `/jobs/{id}/download/srt` | Download .srt subtitle file |
 | GET | `/jobs/{id}/download/vtt` | Download .vtt subtitle file |
+| GET | `/jobs/{id}/download/video` | Download burned-subtitle MP4 (subtitle_burn jobs) |
+| GET | `/jobs/{id}/download/ass` | Download ASS karaoke subtitle file (karaoke jobs) |
+| GET | `/jobs/{id}/download/karaoke-video` | Download karaoke MP4 (karaoke jobs) |
 | DELETE | `/jobs/{id}` | Cancel an active job |
 
 ### Job creation payload
@@ -290,8 +293,17 @@ POST /api/v1/jobs
 }
 ```
 
-Valid `job_type` values: `audio_extraction`, `subtitle_generation`,
-`subtitle_burn`, `karaoke`, `audio_enhance`, `voice_replacement`, `voice_clone`
+**`job_type` values** — the schema layer accepts all names; the API returns HTTP 422 if a type is not yet implemented:
+
+| job_type | Phase | Status |
+|----------|-------|--------|
+| `audio_extraction` | 1 | ✅ implemented |
+| `subtitle_generation` | 2 | ✅ implemented |
+| `subtitle_burn` | 3 | ✅ implemented |
+| `karaoke` | 4 | ✅ implemented |
+| `audio_enhance` | 5 | ⏳ planned — returns 422 |
+| `voice_replacement` | 8 | ⏳ planned — returns 422 |
+| `voice_clone` | 9+ | ⏳ planned — returns 422 |
 
 ---
 
@@ -401,6 +413,32 @@ Valid `job_type` values: `audio_extraction`, `subtitle_generation`,
 |---|-----|-----------|-----|
 | 4 | FFmpeg filter path corruption | `subtitles=<path>:force_style=...` — `:` in path breaks filter option parsing | `_escape_filter_path()` escapes `\`, `:`, `'` in `ffmpeg_service.py` |
 | 5 | Undefined output codec | No `-c:v` flag — FFmpeg defaulted to `mpeg4` for `.mp4` output | Added `-c:v libx264 -crf 23 -preset fast` to burn command |
+
+### Phase 4 — Karaoke Generation ✅ COMPLETE
+
+- **`WhisperService.transcribe(word_timestamps=True)`** — passes `--output-json-full` to whisper.cpp (not `--word-timestamps`; see section 19 for rationale). Each segment's BPE token array is grouped into `WordTimestamp` objects by `_tokens_to_words()` using the leading-space word-boundary convention.
+- **`WordTimestamp` / `WhisperSegment.words`** — new dataclasses added to `whisper_service.py`; segments fall back to empty `words=[]` when tokens are unavailable (graceful degradation to plain subtitles).
+- **`TranscriptResult.to_ass()`** — generates ASS subtitle format with `\kf` karaoke timing. Colour parameters use ASS AABBGGRR format (`&H0000FFFF&` = yellow, `&H00FFFFFF&` = white).
+- **`_build_karaoke_text()`** — builds per-segment `\kf`-tagged text. Pre-roll gap expressed as an empty `\kf` slot (standard ASS karaoke pattern; supported by libass, DirectVobSub, VSFilter).
+- **`FFmpegService.burn_ass()`** — new method; differs from `burn_subtitles()` in that `force_style` is intentionally omitted (ASS carries its own `[V4+ Styles]` section that drives the karaoke colour effect).
+- **`karaoke_task`** — full pipeline: validate video → extract audio → transcribe with word timestamps → write `.ass` → burn `.ass` into `.mp4` → persist `result_files`.
+- **`IMPLEMENTED_JOB_TYPES`** — frozenset derived from `_TASK_MAP`; exported so `create_job()` can guard against unimplemented job types before creating a DB record (prevents zombie jobs with `status=queued`).
+- **`GET /jobs/{id}/download/ass`** — ASS file download endpoint.
+- **`GET /jobs/{id}/download/karaoke-video`** — karaoke MP4 download endpoint.
+- **API pre-flight guard** in `create_job()` — returns HTTP 422 for `voice_replacement`, `voice_clone`, and any other planned-but-unimplemented job type, instead of creating a zombie DB record and then crashing with HTTP 500.
+
+**Validated run:**
+
+| Field | Value |
+|-------|-------|
+| Job ID | `0e44f8ef-0867-437b-a1fc-c9e8d4d90a08` |
+| Status | `completed` |
+| Output | `processed/0e44f8ef-..._karaoke.ass`, `processed/0e44f8ef-..._karaoke.mp4` |
+| Word timestamps present | ✅ |
+| Karaoke highlight effect | ✅ (confirmed in MP4 playback) |
+
+**Known limitation — Whisper model accuracy on music content:**  
+The `ggml-tiny.en.bin` model drops lyrics during long instrumental sections (~27s and ~30s gaps observed in validation). This is a Whisper model limitation, not a code defect — the same gaps appear identically in `subtitle_generation` output (using `--output-json`) and `karaoke` output (using `--output-json-full`). See section 19 and `KNOWN_BUGS_AND_ROOT_CAUSES.md` for details. Use `ggml-base.en.bin` for better accuracy on music videos.
 
 ---
 
@@ -651,6 +689,27 @@ crashes mid-execution, it will be re-queued. `mark_started()` will raise
 `JobConflictError` ("cannot start job in status 'processing'") on retry.
 This is currently unhandled — re-queued tasks after a partial execution will
 fail with a conflict error.
+
+### Whisper model accuracy on music-heavy content
+
+`ggml-tiny.en.bin` produces large silent gaps (20–30 s) when the audio has a
+long instrumental section with no clear vocals. The model emits an `(upbeat
+music)` marker and then produces no segments for the instrumental period.
+The karaoke pipeline faithfully renders whatever whisper.cpp transcribes —
+missing lyrics in the karaoke video always trace back to missing segments in
+the Whisper JSON output, not to a rendering bug. For music videos, switch to
+`ggml-base.en.bin` (142 MB) or `ggml-small.en.bin` (466 MB) in `.env`:
+```bash
+WHISPER_MODEL_PATH=models/ggml-base.en.bin
+```
+
+### Adding a new implemented job type
+
+1. Write the Celery task function and register it in `_TASK_MAP` in `media_tasks.py`.
+2. Add it to `JobType.ALL` in `models/job.py` (allows schema validation to pass).
+3. That is all — `IMPLEMENTED_JOB_TYPES` is derived from `_TASK_MAP` automatically,
+   so the API pre-flight check in `create_job()` will start accepting it with no
+   further changes.
 
 ---
 
@@ -1073,105 +1132,95 @@ Fix: Added `-c:v libx264 -crf 23 -preset fast` to the burn command.
 
 ---
 
-## 19. How to Start Phase 4 — Karaoke Generation
+## 19. Phase 4 — Karaoke Generation: Architecture and Implementation Notes
+
+Phase 4 is **complete**. This section documents the actual implementation,
+replacing the pre-implementation planning notes that were here before.
 
 ### What karaoke generation produces
 
-A video where each word is highlighted (changes colour) at the exact moment it
-is spoken — the same visual effect as karaoke machines. The underlying format is
-ASS (Advanced SubStation Alpha), which supports per-word style overrides that
-the simpler SRT/VTT formats do not.
+A video where each word is highlighted (changes colour) as it is spoken — the
+same visual effect as karaoke machines. The underlying format is ASS (Advanced
+SubStation Alpha), which supports per-word `\kf` fill-sweep timing tags that
+SRT/VTT cannot express.
 
-### Required architecture changes
+---
 
-#### A. `WhisperService.transcribe()` — add word-level timestamps
+### A. Word-level timestamps — `--output-json-full` vs `--word-timestamps`
 
-whisper.cpp supports word-level timestamps via the `--word-timestamps` flag.
-When enabled, each segment's JSON output includes a `words` array:
+The implementation uses `--output-json-full` instead of the `--word-timestamps`
+flag that was originally planned. They are different flags with different JSON
+schemas:
 
-```json
-{
-  "segments": [{
-    "text": "Hello world",
-    "start": 0.0, "end": 1.2,
-    "words": [
-      {"word": "Hello", "start": 0.0, "end": 0.6},
-      {"word": "world", "start": 0.7, "end": 1.2}
-    ]
-  }]
-}
+| Flag | Schema | Availability |
+|------|--------|--------------|
+| `--word-timestamps 1` | Adds a `words` array directly to each segment | whisper.cpp ≥ mid-2024 |
+| `--output-json-full` | Adds a `tokens` array (BPE-level) to each segment | whisper.cpp ≥ mid-2023 |
+
+**Why `--output-json-full` was chosen:**
+1. Broader compatibility — available on all whisper.cpp builds from 2023 onward,
+   including the build at `tools/whisper.cpp/` on this machine.
+2. Higher word-boundary quality — BPE tokens are grouped by the leading-space
+   convention in `_tokens_to_words()`, which handles contractions and punctuation
+   more cleanly than whisper.cpp's own grouper.
+
+**BPE-to-word grouping (`_tokens_to_words`):**
+- A token whose `text` starts with `" "` (space) marks the start of a new word.
+- Tokens without a leading space are sub-word continuations appended to the
+  current group (e.g. `" today"` + `"'s"` → `"today's"`).
+- Bracket-wrapped tokens like `[_BEG_]` and `[_TT_250]` are skipped entirely —
+  they are whisper.cpp internal timing markers, not transcribed text.
+
+**Token offsets** — both segment-level offsets and per-token offsets are in
+milliseconds in the JSON output. `_group_to_word()` converts to seconds.
+
+---
+
+### B. `to_ass()` — ASS karaoke subtitle generation
+
+The `\kf` (karaoke fill) tag sweeps a highlight colour left-to-right through
+each word syllable. Timing is expressed in centiseconds (ASS spec).
+
+**Colour format:** ASS uses `&HAABBGGRR&` (alpha, blue, green, red).
+
+| Colour | ASS value | Hex breakdown |
+|--------|-----------|---------------|
+| Yellow | `&H0000FFFF&` | A=00, B=00, G=FF, R=FF |
+| White  | `&H00FFFFFF&` | A=00, B=FF, G=FF, R=FF |
+| Black  | `&H00000000&` | all zero |
+
+`PrimaryColour` (= `highlight_color`) is the colour the word sweeps **to**.
+`SecondaryColour` (= `base_color`) is the colour words sit in before they are
+reached. For the default yellow-on-white effect, set:
+```
+highlight_color = &H0000FFFF&   (yellow)
+base_color      = &H00FFFFFF&   (white)
 ```
 
-Change required in `whisper_service.py`:
-```python
-async def transcribe(
-    self,
-    audio_path: Path,
-    language: Optional[str] = None,
-    word_timestamps: bool = False,   # ← new param
-) -> TranscriptResult:
-    if word_timestamps:
-        cmd.append("--word-timestamps")
-        cmd.append("true")
-```
+**Pre-roll empty `\kf` tag:**  
+When the first word starts later than `seg.start`, a silent `{\kfN}` tag is
+emitted with no text after it, before the first word's `{\kfM}tag`.
+Consecutive `\kf` tags with empty text between them are valid ASS; per the
+spec, the empty "syllable" consumes N centiseconds without visual change.
+This is a standard pattern in karaoke editors (Aegisub) and is handled
+identically by libass (FFmpeg, VLC, MPV), DirectVobSub, and VSFilter.
 
-`TranscriptResult` needs a `words` field per segment:
-```python
-@dataclass
-class WordTimestamp:
-    word: str
-    start: float
-    end: float
+---
 
-@dataclass
-class Segment:
-    ...
-    words: list[WordTimestamp] = field(default_factory=list)
-```
+### C. `burn_ass()` vs `burn_subtitles()`
 
-#### B. `TranscriptResult.to_ass()` — generate ASS subtitle format
+`FFmpegService.burn_ass()` deliberately omits `force_style`. ASS files carry
+their own `[V4+ Styles]` section; passing `force_style` would override the
+`PrimaryColour`/`SecondaryColour` values that drive the karaoke `\kf` effect.
+`burn_subtitles()` uses `force_style` legitimately because SRT has no
+embedded styling.
 
-ASS format supports inline style overrides. The karaoke effect uses `{\1c&H<colour>&}` tags to change the primary colour of individual words.
+Both methods call `_escape_filter_path()` for the same reason: the FFmpeg
+`subtitles=` filter uses `:` as an option separator regardless of subtitle format.
 
-Example ASS karaoke line:
-```
-Dialogue: 0,0:00:00.00,0:00:01.20,Default,,0,0,0,,{\1c&H0000FF&}Hello {\1c&HFFFFFF&}world
-```
+---
 
-The `to_ass()` method iterates over segments, and within each segment iterates
-over word timestamps, emitting one `Dialogue` line per segment where each word
-is wrapped in a colour override that fires at word start time.
-
-#### C. `karaoke_task` in `media_tasks.py`
-
-Full replacement of the current stub. Pipeline:
-
-```
-1. mark_started()
-2. update_progress(10, "Extracting audio")
-3. FFmpegService.extract_audio()       — same as Phase 2
-4. update_progress(25, "Transcribing with word timestamps")
-5. WhisperService.transcribe(word_timestamps=True)
-6. update_progress(70, "Generating ASS subtitle file")
-7. TranscriptResult.to_ass() → write <job_id>_karaoke.ass
-8. update_progress(75, "Burning karaoke subtitles")
-9. FFmpegService.burn_subtitles(video, ass_path, output)   — same FFmpeg filter
-10. update_progress(90, "Finalising")
-11. params["result_files"] = {"ass": str(ass_path), "video": str(output)}
-12. mark_completed()
-```
-
-No new dependencies. No new queues. Routes to `ai` queue (same as
-`generate_subtitles_task` — computationally intensive).
-
-#### D. New API endpoints
-
-```
-GET /jobs/{id}/download/ass   — ASS subtitle file
-GET /jobs/{id}/download/video — burned karaoke MP4 (re-use Phase 3 route pattern)
-```
-
-### Job creation payload
+### D. Karaoke job creation payload
 
 ```json
 POST /api/v1/jobs
@@ -1180,22 +1229,57 @@ POST /api/v1/jobs
   "job_type": "karaoke",
   "parameters": {
     "language": "en",
-    "highlight_color": "&H000000FF&",   // yellow in ASS AABBGGRR
-    "base_color":      "&H00FFFFFF&"    // white
+    "highlight_color": "&H0000FFFF&",
+    "base_color":      "&H00FFFFFF&",
+    "font_name":       "Arial",
+    "font_size":       24
   }
 }
 ```
 
-### Pitfalls to avoid
-
-| Pitfall | Mitigation |
-|---------|-----------|
-| whisper.cpp `--word-timestamps` changes the JSON output schema | Parse `words` array defensively; fall back to segment-level if `words` absent |
-| ASS format is whitespace-sensitive | Test `.to_ass()` output against `ffprobe` subtitle stream validation |
-| Word timestamps may not be available on all whisper models | `ggml-tiny.en.bin` supports word timestamps; verify on first run |
-| FFmpeg `subtitles=` filter with `.ass` file | Same path-escaping rule applies — use `_escape_filter_path()` |
-| Task routes to `ai` queue | Celery must be started with `--queues media,ai` — already required |
+Download endpoints after completion:
+```
+GET /api/v1/jobs/{id}/download/ass           → <job_id>_karaoke.ass
+GET /api/v1/jobs/{id}/download/karaoke-video → <job_id>_karaoke.mp4
+GET /api/v1/jobs/{id}/result                 → same MP4 (generic endpoint)
+```
 
 ---
 
-*Last updated: 2026-06-14 by Cursor AI agent — Phase 3 complete; Bug 6 (FastAPI route ordering) fixed and documented.*
+### E. Known limitation — Whisper model accuracy on music
+
+`ggml-tiny.en.bin` drops lyrics during long instrumental sections. The model
+emits an `(upbeat music)` or similar placeholder for a few seconds and then
+produces no further segments until the next clear vocal section. Gaps of 20–30 s
+have been observed on music videos (confirmed in job `0e44f8ef-...`).
+
+**This is not a bug in the karaoke pipeline.** The same gaps appear with
+identical timestamps in `subtitle_generation` runs (using `--output-json`) on
+the same audio. The karaoke renderer faithfully renders exactly what Whisper
+transcribes.
+
+**Mitigation:** Set `WHISPER_MODEL_PATH=models/ggml-base.en.bin` in `.env`.
+The `ggml-base.en.bin` (142 MB) and `ggml-small.en.bin` (466 MB) models are
+already downloaded at `backend/models/` and produce significantly better
+results on overlapping music and vocals.
+
+---
+
+### F. Phase 4 git commands (when ready to commit)
+
+```bash
+git add .
+git commit -m "Phase 4: karaoke generation
+
+- --output-json-full + BPE token grouping for word-level timestamps
+- TranscriptResult.to_ass() with \\kf karaoke timing
+- FFmpegService.burn_ass() (no force_style — ASS carries own styles)
+- karaoke_task: extract → transcribe → write ASS → burn MP4
+- GET /jobs/{id}/download/ass and /download/karaoke-video endpoints
+- IMPLEMENTED_JOB_TYPES guard: voice_replacement/voice_clone return 422"
+git tag -a phase4-karaoke -m "Phase 4: karaoke generation complete"
+```
+
+---
+
+*Last updated: 2026-06-15 by Cursor AI agent — Phase 4 complete; pre-commit engineering review.*

@@ -224,6 +224,52 @@ class FFmpegService:
         await _run(cmd, f"Subtitle burning failed for {video_path.name}")
         logger.info("burn_subtitles_done", dst=str(output_path))
 
+    async def burn_ass(
+        self,
+        video_path:  Path,
+        ass_path:    Path,
+        output_path: Path,
+    ) -> None:
+        """Burn ASS karaoke subtitles into video, re-encoding the video stream as H.264.
+
+        force_style is deliberately absent.  ASS files embed their own [V4+ Styles]
+        section; PrimaryColour and SecondaryColour there drive the \\kf karaoke
+        highlight (highlighted word vs. base word colour).  Adding force_style
+        would silently override those embedded values and destroy the karaoke
+        effect.  burn_subtitles() uses force_style legitimately because SRT
+        carries no embedded styling of its own.
+
+        _escape_filter_path() is still required even for .ass files — the FFmpeg
+        subtitles= filter treats ':' as an option separator regardless of the
+        subtitle format.  The project path contains a space ("Mustafa projects")
+        and potentially a colon on other systems.  See Bug 4 in
+        KNOWN_BUGS_AND_ROOT_CAUSES.md for the full root cause.
+
+        Explicit -c:v libx264 prevents FFmpeg defaulting to mpeg4 for .mp4
+        output.  See Bug 5 in KNOWN_BUGS_AND_ROOT_CAUSES.md.
+        """
+        escaped = self._escape_filter_path(ass_path)
+        subtitle_filter = f"subtitles={escaped}"
+        cmd = [
+            self.ffmpeg,
+            "-i", str(video_path),
+            "-vf", subtitle_filter,
+            "-c:v", "libx264",
+            "-crf", "23",
+            "-preset", "fast",
+            "-c:a", "copy",
+            "-y",
+            str(output_path),
+        ]
+        logger.info(
+            "burn_ass_start",
+            src=str(video_path),
+            ass=str(ass_path),
+            dst=str(output_path),
+        )
+        await _run(cmd, f"Karaoke subtitle burning failed for {video_path.name}")
+        logger.info("burn_ass_done", dst=str(output_path))
+
     # ── Audio Mixing ──────────────────────────────────────────────────────────
 
     async def replace_audio(

@@ -1,8 +1,8 @@
 # VoxClone — Known Bugs and Root Causes
 
-**Branch:** `feature/subtitle-burn`
-**Last updated:** 2026-06-14
-**All bugs listed here have been fixed.**
+**Branch:** `feature/karaoke-generation`
+**Last updated:** 2026-06-15
+**All bugs listed here have been fixed. See "Known Limitations" at the bottom for non-bug behavioural constraints.**
 
 ---
 
@@ -291,5 +291,74 @@ with `Content-Type: video/mp4`.
 
 ## No Known Open Bugs
 
-As of the routing fix (after `2f9f643`), no unresolved bugs are known.
-The next session starts Phase 4 (Karaoke Generation) on a clean foundation.
+As of Phase 4 (pre-commit), no unresolved bugs are known.
+
+---
+
+## Known Limitations (not bugs)
+
+### Limitation 1 — Whisper `ggml-tiny.en.bin` drops lyrics on music-heavy content
+
+**Phase discovered:** 4 (karaoke validation)  **Status:** Not fixable in application code.
+
+#### Symptom
+
+The karaoke output (and the plain subtitle output) contains silent gaps of
+20–30 s at positions that clearly contain sung lyrics in the source video.
+The karaoke video plays correctly for the transcribed segments but shows no
+subtitle text during the gaps.
+
+#### Investigation
+
+Cross-referencing two independent transcription runs on the same media file:
+
+| Run | Job ID | Flag | Gap 1 | Gap 2 |
+|-----|--------|------|-------|-------|
+| `subtitle_generation` | `d69ee4aa-...` | `--output-json` | 0:57.340 → 1:24.760 | 2:49.240 → 3:19.240 |
+| `karaoke` | `0e44f8ef-...` | `--output-json-full` | 0:57.340 → 1:24.760 | 2:49.240 → 3:19.240 |
+
+Both runs produced **identical timestamps and identical segment counts (76)**,
+proving the gaps originate in whisper.cpp output before any application code
+processes the data.  The tiny model emitted `(upbeat music)` at 0:54.76 →
+0:57.34, then produced no segments for the subsequent ~27 s instrumental
+section.  The karaoke pipeline renders exactly what Whisper transcribes.
+
+#### Root Cause
+
+`ggml-tiny.en.bin` has limited accuracy on overlapping music and vocals.
+During instrumental sections with no dominant speech, the model either:
+- Produces a generic placeholder (e.g. `(upbeat music)`) and then skips, or
+- Generates no output at all for that time range.
+
+This is a known characteristic of small Whisper models on music content, not
+a defect in the transcription parsing code, the ASS generation, or the karaoke
+video rendering.
+
+#### Mitigation
+
+Switch to a larger model in `backend/.env`:
+
+```bash
+# Better for music/vocals (already downloaded)
+WHISPER_MODEL_PATH=models/ggml-base.en.bin    # 142 MB — recommended for music
+WHISPER_MODEL_PATH=models/ggml-small.en.bin   # 466 MB — highest accuracy
+```
+
+Both `ggml-base.en.bin` and `ggml-small.en.bin` are already present in
+`backend/models/`.  No code changes are required.
+
+---
+
+## Bug Fix Order by Phase
+
+```
+Phase 2:
+  Bug 1 (Redis) → Bug 2 (MissingGreenlet) → Bug 3 (LD_LIBRARY_PATH) → Phase 2 working
+
+Phase 3:
+  Bug 4 (filter escaping) → Bug 5 (no codec) → Bug 6 (route order) → Phase 3 working
+
+Phase 4:
+  No bugs found. One pre-existing issue fixed: voice_replacement/voice_clone
+  returned HTTP 500; now returns HTTP 422 via IMPLEMENTED_JOB_TYPES guard.
+```
