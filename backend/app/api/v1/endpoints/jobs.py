@@ -9,6 +9,7 @@ from fastapi.responses import FileResponse
 from app.api.deps import get_job_service, get_media_service, get_redis
 from app.core.exceptions import ResultNotReadyError
 from app.models.job import JobStatus, JobType
+from app.models.stem_metadata import STEM_ORIGIN_CANONICAL, STEM_ORIGIN_INLINE
 from app.schemas.common import MessageResponse
 from app.schemas.job import JobCreate, JobProgressResponse, JobResponse
 from app.services.job_service import JobService
@@ -27,6 +28,32 @@ _SUBTITLE_EXT = {
     "vtt": ".vtt",
 }
 
+_SUBTITLE_JOB_TYPES = frozenset({
+    JobType.SUBTITLE_GENERATION,
+    JobType.KARAOKE,
+})
+
+
+def _canonical_stem_job(job) -> bool:
+    return (
+        job.job_type == JobType.VOCAL_SEPARATION
+        and (job.parameters or {}).get("stem_origin") == STEM_ORIGIN_CANONICAL
+    )
+
+
+def _inline_stem_karaoke_job(job) -> bool:
+    params = job.parameters or {}
+    return (
+        job.job_type == JobType.KARAOKE
+        and params.get("stem_origin") == STEM_ORIGIN_INLINE
+    )
+
+
+def _stem_download_allowed(job) -> bool:
+    """Canonical vocal_separation jobs and karaoke jobs with inline stems."""
+    return _canonical_stem_job(job) or _inline_stem_karaoke_job(job)
+
+
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
 
@@ -38,7 +65,17 @@ router = APIRouter(prefix="/jobs", tags=["jobs"])
     description=(
         "Creates a processing job for an uploaded media file and immediately "
         "dispatches it to the Celery worker queue. "
-        "Poll `/jobs/{id}/progress` for live status updates."
+        "Poll `/jobs/{id}/progress` for live status updates.\n\n"
+        "**Whisper model selection** (optional, in `parameters`):\n"
+        "- `whisper_model`: `tiny` | `base` | `small`\n"
+        "- Default for `subtitle_generation`: `tiny`\n"
+        "- Default for `karaoke`: `base`\n\n"
+        "**Vocal separation** (`job_type`: `vocal_separation`):\n"
+        "- Produces `vocals.wav` and `instrumental.wav` (canonical stems)\n"
+        "- Optional `parameters.separation_model` (default: `htdemucs`)\n\n"
+        "**Karaoke** (`job_type`: `karaoke`):\n"
+        "- Optional `parameters.output_mode`: "
+        "`karaoke_video_with_vocals` (default) | `karaoke_video_no_vocals`"
     ),
 )
 async def create_job(
@@ -173,7 +210,9 @@ async def cancel_job(
 #   1. /download/video           ← Phase 3: subtitle_burn jobs
 #   2. /download/ass             ← Phase 4: karaoke jobs (ASS file)
 #   3. /download/karaoke-video   ← Phase 4: karaoke jobs (MP4)
-#   4. /download/{format_type}   ← must remain LAST
+#   4. /download/vocals          ← Phase 5: vocal_separation jobs
+#   5. /download/instrumental    ← Phase 5: vocal_separation jobs
+#   6. /download/{format_type}   ← must remain LAST
 
 @router.get(
     "/{job_id}/download/video",
@@ -346,6 +385,109 @@ async def download_karaoke_video(
 
 
 @router.get(
+    "/{job_id}/download/vocals",
+    summary="Download the isolated vocals stem",
+    description=(
+        "Download the vocals WAV from a `vocal_separation` job (canonical) or a "
+        "`karaoke` job with inline separation (`stem_origin`: `inline`)."
+    ),
+)
+async def download_vocals_stem(
+    job_id: str,
+    job_svc: JobService = Depends(get_job_service),
+) -> FileResponse:
+    job = await job_svc.get_by_id(job_id)
+
+    if not _stem_download_allowed(job):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Job '{job_id}' does not expose downloadable stems. "
+                "Use a completed vocal_separation job, or a karaoke job with "
+                "output_mode=karaoke_video_no_vocals."
+            ),
+        )
+
+    if job.status != JobStatus.COMPLETED:
+        raise ResultNotReadyError(job_id=job_id, current_status=job.status)
+
+    result_files: dict = (job.parameters or {}).get("result_files", {})
+    file_path_str = result_files.get("vocals")
+
+    if not file_path_str and job.result_path and job.job_type == JobType.VOCAL_SEPARATION:
+        file_path_str = job.result_path
+
+    if not file_path_str:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Vocals path is not recorded for job '{job_id}'.",
+        )
+
+    path = Path(file_path_str)
+    if not path.exists():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Vocals file has been deleted from disk.",
+        )
+
+    return FileResponse(
+        path=str(path),
+        filename=f"{job_id}_vocals.wav",
+        media_type="audio/wav",
+    )
+
+
+@router.get(
+    "/{job_id}/download/instrumental",
+    summary="Download the instrumental stem",
+    description=(
+        "Download the instrumental WAV from a `vocal_separation` job (canonical) or "
+        "a `karaoke` job with inline separation (`stem_origin`: `inline`)."
+    ),
+)
+async def download_instrumental_stem(
+    job_id: str,
+    job_svc: JobService = Depends(get_job_service),
+) -> FileResponse:
+    job = await job_svc.get_by_id(job_id)
+
+    if not _stem_download_allowed(job):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Job '{job_id}' does not expose downloadable stems. "
+                "Use a completed vocal_separation job, or a karaoke job with "
+                "output_mode=karaoke_video_no_vocals."
+            ),
+        )
+
+    if job.status != JobStatus.COMPLETED:
+        raise ResultNotReadyError(job_id=job_id, current_status=job.status)
+
+    result_files: dict = (job.parameters or {}).get("result_files", {})
+    file_path_str = result_files.get("instrumental")
+
+    if not file_path_str:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Instrumental path is not recorded for job '{job_id}'.",
+        )
+
+    path = Path(file_path_str)
+    if not path.exists():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Instrumental file has been deleted from disk.",
+        )
+
+    return FileResponse(
+        path=str(path),
+        filename=f"{job_id}_instrumental.wav",
+        media_type="audio/wav",
+    )
+
+
+@router.get(
     "/{job_id}/download/{format_type}",
     summary="Download a specific subtitle output format",
     description=(
@@ -353,7 +495,7 @@ async def download_karaoke_video(
         "- **transcript** — plain-text transcript (.txt)\n"
         "- **srt** — SubRip subtitle file (.srt)\n"
         "- **vtt** — WebVTT subtitle file (.vtt)\n\n"
-        "Only available for completed `subtitle_generation` jobs."
+        "Only available for completed `subtitle_generation` or `karaoke` jobs."
     ),
 )
 async def download_subtitle_format(
@@ -363,13 +505,12 @@ async def download_subtitle_format(
 ) -> FileResponse:
     job = await job_svc.get_by_id(job_id)
 
-    if job.job_type != JobType.SUBTITLE_GENERATION:
+    if job.job_type not in _SUBTITLE_JOB_TYPES:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=(
-                f"Job '{job_id}' is of type '{job.job_type}', "
-                "not 'subtitle_generation'. "
-                "Use /jobs/{id}/result for other job types."
+                f"Job '{job_id}' is of type '{job.job_type}'. "
+                "Subtitle downloads require subtitle_generation or karaoke jobs."
             ),
         )
 

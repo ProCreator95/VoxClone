@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-import asyncio
-
 from celery import Celery
 from celery.signals import worker_process_init, worker_process_shutdown, worker_ready, worker_shutdown
 
 from app.core.config import get_settings
 from app.core.logging import get_logger, setup_logging
+from app.tasks.async_runner import get_worker_event_loop
 
 logger = get_logger(__name__)
 
@@ -49,6 +48,7 @@ def create_celery_app() -> Celery:
             "app.tasks.media_tasks.generate_subtitles_task": {"queue": "ai"},
             "app.tasks.media_tasks.burn_subtitles_task": {"queue": "media"},
             "app.tasks.media_tasks.karaoke_task": {"queue": "ai"},
+            "app.tasks.media_tasks.vocal_separation_task": {"queue": "ai"},
             "app.tasks.media_tasks.audio_enhance_task": {"queue": "ai"},
         },
 
@@ -68,7 +68,8 @@ def on_worker_process_init(**kwargs) -> None:
     setup_logging()
     from app.services.redis_service import redis_service  # local import avoids circular issues
 
-    asyncio.run(redis_service.connect())
+    loop = get_worker_event_loop()
+    loop.run_until_complete(redis_service.connect())
     logger.info("celery_worker_process_redis_connected")
 
 
@@ -76,7 +77,8 @@ def on_worker_process_init(**kwargs) -> None:
 def on_worker_process_shutdown(**kwargs) -> None:
     from app.services.redis_service import redis_service
 
-    asyncio.run(redis_service.disconnect())
+    loop = get_worker_event_loop()
+    loop.run_until_complete(redis_service.disconnect())
     logger.info("celery_worker_process_redis_disconnected")
 
 

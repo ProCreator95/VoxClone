@@ -8,15 +8,19 @@ All tasks follow the same pattern:
   2. Execute FFmpeg / AI operations with incremental progress updates.
   3. Mark job COMPLETED (with result_path) or FAILED (with error_message).
 
-Since Celery workers run in their own process, we use asyncio.run() to
-execute async SQLAlchemy/FFmpeg calls from within synchronous Celery tasks.
+Since Celery workers run in their own process, we use run_async() to
+execute async SQLAlchemy/FFmpeg calls on a persistent worker event loop
+(see app.tasks.async_runner). Do not use asyncio.run() in tasks — it
+creates a new loop per task and breaks the Redis client connected at
+worker startup.
 """
 
-import asyncio
 from pathlib import Path
 from typing import Any, Optional
 
 from celery import Task
+
+from app.tasks.async_runner import run_async
 
 from app.core.config import get_settings
 from app.core.logging import get_logger, setup_logging
@@ -25,7 +29,20 @@ from app.models.job import JobStatus, JobType
 from app.models.media import MediaType
 from app.services.ffmpeg_service import FFmpegService
 from app.services.job_service import JobService
+from app.services.source_separation_service import (
+    SourceSeparationError,
+    SourceSeparationService,
+)
+from app.services.whisper_models import WHISPER_MODEL_DEFAULTS, resolve_whisper_model
 from app.services.whisper_service import WhisperService
+from app.models.stem_metadata import (
+    STEM_ORIGIN_CANONICAL,
+    assert_karaoke_stem_origin,
+    karaoke_inline_stem_origin,
+)
+from app.services.karaoke_modes import resolve_karaoke_output_mode
+from app.services.separation_models import validate_separation_model
+from app.utils.file_utils import resolve_output_path
 from app.tasks.celery_app import celery_app
 
 logger = get_logger(__name__)
@@ -104,7 +121,7 @@ def extract_audio_task(self: Task, job_id: str) -> dict:
                 await JobService(db).mark_failed(job_id, str(exc))
             raise
 
-    return asyncio.run(_run())
+    return run_async(_run())
 
 
 # ── Task: Subtitle Generation ─────────────────────────────────────────────────
@@ -130,6 +147,11 @@ def generate_subtitles_task(self: Task, job_id: str) -> dict:
               <job_id>_subtitles.vtt   — WebVTT subtitles
         5. Persist all paths in job.parameters['result_files'].
         6. Set job.result_path to the .srt file (primary output).
+
+    Parameters (passed via job.parameters at job-creation time):
+        language        (str, optional  — default: WHISPER_LANGUAGE from settings)
+        whisper_model   (str, optional  — tiny | base | small; default: tiny)
+        audio_path      (str, optional  — testing override for pre-extracted WAV)
     """
 
     async def _run() -> dict:
@@ -280,10 +302,20 @@ def generate_subtitles_task(self: Task, job_id: str) -> dict:
                 # Language may be overridden per-job via parameters["language"].
                 # Falls back to WHISPER_LANGUAGE from settings (default: "en").
                 language: Optional[str] = params.get("language") or None
+                whisper_model_param: Optional[str] = params.get("whisper_model")
+
+                logger.info(
+                    "diag_subtitle_before_transcribe",
+                    job_id=job_id,
+                    language=language or "auto",
+                    whisper_model=whisper_model_param or WHISPER_MODEL_DEFAULTS[JobType.SUBTITLE_GENERATION],
+                )
 
                 transcript = await whisper.transcribe(
                     audio_path=audio_path,
                     language=language,
+                    whisper_model=whisper_model_param,
+                    job_type=JobType.SUBTITLE_GENERATION,
                 )
 
                 await _update_progress(job_id, 70, "Generating subtitle files")
@@ -307,6 +339,13 @@ def generate_subtitles_task(self: Task, job_id: str) -> dict:
                 }
                 params["detected_language"] = transcript.language
                 params["segment_count"] = len(transcript.segments)
+                resolved_alias, model_path = resolve_whisper_model(
+                    whisper_model_param,
+                    JobType.SUBTITLE_GENERATION,
+                    settings,
+                )
+                params["whisper_model"] = resolved_alias
+                params["whisper_model_file"] = model_path.name
 
                 async with get_db_context() as db:
                     job_svc = JobService(db)
@@ -357,7 +396,7 @@ def generate_subtitles_task(self: Task, job_id: str) -> dict:
             )
             raise
 
-    return asyncio.run(_run())
+    return run_async(_run())
 
 
 # ── Task: Subtitle Burn ───────────────────────────────────────────────────────
@@ -636,7 +675,35 @@ def burn_subtitles_task(self: Task, job_id: str) -> dict:
             )
             raise
 
-    return asyncio.run(_run())
+    return run_async(_run())
+
+
+def _karaoke_write_transcript_files(job_id: str, transcript: Any) -> dict[str, str]:
+    """Write plain transcript and subtitle sidecars for downstream phases."""
+    txt_path = settings.PROCESSED_DIR / f"{job_id}_transcript.txt"
+    srt_path = settings.PROCESSED_DIR / f"{job_id}_subtitles.srt"
+    vtt_path = settings.PROCESSED_DIR / f"{job_id}_subtitles.vtt"
+    txt_path.write_text(transcript.to_txt(), encoding="utf-8")
+    srt_path.write_text(transcript.to_srt(), encoding="utf-8")
+    vtt_path.write_text(transcript.to_vtt(), encoding="utf-8")
+    return {
+        "transcript": str(txt_path),
+        "srt":        str(srt_path),
+        "vtt":        str(vtt_path),
+    }
+
+
+def _karaoke_persist_whisper_metadata(
+    params: dict,
+    whisper_model_param: Optional[str],
+) -> None:
+    resolved_alias, model_path = resolve_whisper_model(
+        whisper_model_param,
+        JobType.KARAOKE,
+        settings,
+    )
+    params["whisper_model"] = resolved_alias
+    params["whisper_model_file"] = model_path.name
 
 
 # ── Task: Karaoke Generation ──────────────────────────────────────────────────
@@ -662,7 +729,10 @@ def karaoke_task(self: Task, job_id: str) -> dict:
         8. Set job.result_path to the output MP4.
 
     Parameters (passed via job.parameters at job-creation time):
+        output_mode     (str, optional  — default: karaoke_video_with_vocals)
         language        (str, optional  — default: WHISPER_LANGUAGE from settings)
+        whisper_model   (str, optional  — tiny | base | small; default: base)
+        separation_model (str, optional — Demucs model; inline separation only)
         highlight_color (str, optional  — default: "&H0000FFFF&" yellow, ASS AABBGGRR)
         base_color      (str, optional  — default: "&H00FFFFFF&" white)
         font_name       (str, optional  — default: "Arial")
@@ -695,13 +765,14 @@ def karaoke_task(self: Task, job_id: str) -> dict:
             # ── DIAG 2/3: services ───────────────────────────────────────────
             logger.info("diag_karaoke_creating_services", job_id=job_id)
             try:
-                ffmpeg  = FFmpegService()
+                ffmpeg = FFmpegService()
                 whisper = WhisperService()
+                separation = SourceSeparationService()
                 logger.info(
                     "diag_karaoke_services_ok",
                     job_id=job_id,
                     whisper_binary=settings.WHISPER_CPP_BINARY,
-                    whisper_model=str(settings.WHISPER_MODEL_PATH),
+                    whisper_model_default=WHISPER_MODEL_DEFAULTS[JobType.KARAOKE],
                 )
             except Exception:
                 logger.exception("diag_karaoke_services_failed", job_id=job_id)
@@ -747,14 +818,13 @@ def karaoke_task(self: Task, job_id: str) -> dict:
                 )
                 raise
 
-            # ── 2-8. Pipeline ─────────────────────────────────────────────────
+            # ── 2-N. Pipeline ─────────────────────────────────────────────────
             try:
                 await _update_progress(job_id, 5, "Validating source")
 
-                # ── 2. Validate media type ────────────────────────────────────
-                # burn_ass() requires a video stream.  Failing here gives a clear
-                # error message; failing inside FFmpeg produces an opaque
-                # "no video stream" error that is harder to diagnose.
+                output_mode = resolve_karaoke_output_mode(params)
+                params["output_mode"] = output_mode
+
                 if media.media_type != MediaType.VIDEO:
                     raise ValueError(
                         f"Karaoke pipeline requires a video file; "
@@ -766,57 +836,92 @@ def karaoke_task(self: Task, job_id: str) -> dict:
                 if not video_path.exists():
                     raise FileNotFoundError(f"Source video not found: {video_path}")
 
+                language: Optional[str] = params.get("language") or None
+                whisper_model_param: Optional[str] = params.get("whisper_model")
+                use_inline_separation = output_mode == "karaoke_video_no_vocals"
+
                 logger.info(
                     "diag_karaoke_validation_passed",
                     job_id=job_id,
                     video_path=str(video_path),
-                    video_size_bytes=video_path.stat().st_size,
+                    output_mode=output_mode,
+                    use_inline_separation=use_inline_separation,
                 )
 
-                # ── 3. Extract audio ──────────────────────────────────────────
-                await _update_progress(job_id, 10, "Extracting audio from video")
+                inline_vocals_path: Optional[Path] = None
+                inline_instrumental_path: Optional[Path] = None
 
-                audio_path = settings.PROCESSED_DIR / f"{job_id}_audio.wav"
-                logger.info(
-                    "diag_karaoke_before_extract_audio",
-                    job_id=job_id,
-                    video_path=str(video_path),
-                    audio_path=str(audio_path),
-                )
-                await ffmpeg.extract_audio(video_path, audio_path)
-                logger.info(
-                    "diag_karaoke_audio_extracted",
-                    job_id=job_id,
-                    audio_path=str(audio_path),
-                    audio_exists=audio_path.exists(),
-                )
+                whisper_audio_path = settings.PROCESSED_DIR / f"{job_id}_audio.wav"
 
-                # ── 4. Transcribe with word-level timestamps ──────────────────
-                await _update_progress(job_id, 25, "Transcribing with word-level timestamps")
+                if use_inline_separation:
+                    await separation.validate()
+                    await _update_progress(job_id, 10, "Extracting stereo audio for separation")
 
-                # Language may be overridden per-job via parameters["language"].
-                language: Optional[str] = params.get("language") or None
+                    stereo_path = resolve_output_path(
+                        settings.PROCESSED_DIR, job_id, "separation_input", "wav"
+                    )
+                    await ffmpeg.extract_stereo_wav(video_path, stereo_path)
+                    params["intermediate_files"] = {
+                        "separation_input": str(stereo_path),
+                    }
+
+                    separation_model = validate_separation_model(
+                        str(params.get("separation_model") or settings.DEMUCS_MODEL)
+                    )
+                    params["separation_model"] = separation_model
+
+                    await _update_progress(job_id, 20, "Separating vocals with Demucs")
+
+                    sep_result = await separation.separate(
+                        stereo_path,
+                        job_id,
+                        model=separation_model,
+                    )
+                    inline_vocals_path = sep_result.vocals_path
+                    inline_instrumental_path = sep_result.instrumental_path
+
+                    stem_origin = karaoke_inline_stem_origin()
+                    assert_karaoke_stem_origin(stem_origin)
+                    params["stem_origin"] = stem_origin
+
+                    await _update_progress(job_id, 30, "Preparing isolated vocals for transcription")
+
+                    whisper_audio_path = settings.PROCESSED_DIR / f"{job_id}_whisper_audio.wav"
+                    await ffmpeg.transcode_to_whisper_wav(
+                        inline_vocals_path,
+                        whisper_audio_path,
+                    )
+                else:
+                    await _update_progress(job_id, 10, "Extracting audio from video")
+                    await ffmpeg.extract_audio(video_path, whisper_audio_path)
+                    params["intermediate_files"] = {
+                        "audio": str(whisper_audio_path),
+                    }
+
+                await _update_progress(job_id, 40, "Transcribing with word-level timestamps")
+
                 logger.info(
                     "diag_karaoke_before_transcribe",
                     job_id=job_id,
-                    audio_path=str(audio_path),
+                    audio_path=str(whisper_audio_path),
                     language=language or "auto",
+                    whisper_model=whisper_model_param or WHISPER_MODEL_DEFAULTS[JobType.KARAOKE],
+                    output_mode=output_mode,
                     word_timestamps=True,
                 )
 
                 transcript = await whisper.transcribe(
-                    audio_path=audio_path,
+                    audio_path=whisper_audio_path,
                     language=language,
                     word_timestamps=True,
+                    whisper_model=whisper_model_param,
+                    job_type=JobType.KARAOKE,
                 )
 
-                total_words   = sum(len(seg.words) for seg in transcript.segments)
-                has_words     = total_words > 0
+                total_words = sum(len(seg.words) for seg in transcript.segments)
+                has_words = total_words > 0
                 segment_count = len(transcript.segments)
 
-                # Log word count regardless of value — zero words is a valid
-                # (if unfortunate) outcome and should be visible in the worker log
-                # so it can be distinguished from a whisper.cpp crash.
                 logger.info(
                     "diag_karaoke_word_count",
                     job_id=job_id,
@@ -826,10 +931,13 @@ def karaoke_task(self: Task, job_id: str) -> dict:
                     has_word_timestamps=has_words,
                 )
 
-                # ── 5. Generate ASS karaoke subtitle file ─────────────────────
+                await _update_progress(job_id, 60, "Generating subtitle files")
+
+                subtitle_files = _karaoke_write_transcript_files(job_id, transcript)
+
                 await _update_progress(job_id, 65, "Generating ASS karaoke subtitle file")
 
-                ass_path    = settings.PROCESSED_DIR / f"{job_id}_karaoke.ass"
+                ass_path = settings.PROCESSED_DIR / f"{job_id}_karaoke.ass"
                 ass_content = transcript.to_ass(
                     highlight_color=str(params.get("highlight_color", "&H0000FFFF&")),
                     base_color=str(params.get("base_color",      "&H00FFFFFF&")),
@@ -838,62 +946,41 @@ def karaoke_task(self: Task, job_id: str) -> dict:
                 )
                 ass_path.write_text(ass_content, encoding="utf-8")
 
-                logger.info(
-                    "diag_karaoke_ass_written",
-                    job_id=job_id,
-                    ass_path=str(ass_path),
-                    ass_size_bytes=ass_path.stat().st_size,
-                    kf_tags_present=has_words,
-                )
-
-                # ── 6. Burn ASS into video ────────────────────────────────────
-                await _update_progress(job_id, 70, "Burning karaoke subtitles into video")
+                await _update_progress(job_id, 75, "Burning karaoke subtitles into video")
 
                 output_path = settings.PROCESSED_DIR / f"{job_id}_karaoke.mp4"
 
-                logger.info(
-                    "diag_karaoke_ffmpeg_start",
-                    job_id=job_id,
-                    video_path=str(video_path),
-                    ass_path=str(ass_path),
-                    output_path=str(output_path),
-                )
+                if use_inline_separation:
+                    instrumental_video = settings.PROCESSED_DIR / f"{job_id}_instrumental_video.mp4"
+                    await ffmpeg.replace_audio(
+                        video_path,
+                        inline_instrumental_path,
+                        instrumental_video,
+                    )
+                    params["intermediate_files"]["instrumental_video"] = str(instrumental_video)
+                    burn_video_path = instrumental_video
+                else:
+                    burn_video_path = video_path
 
-                await ffmpeg.burn_ass(video_path, ass_path, output_path)
-
-                logger.info(
-                    "diag_karaoke_ffmpeg_done",
-                    job_id=job_id,
-                    output_path=str(output_path),
-                    output_exists=output_path.exists(),
-                    output_size_bytes=(
-                        output_path.stat().st_size if output_path.exists() else 0
-                    ),
-                )
+                await ffmpeg.burn_ass(burn_video_path, ass_path, output_path)
 
                 await _update_progress(job_id, 90, "Finalising")
 
-                # ── 7. Persist result ─────────────────────────────────────────
-                # word_count, segment_count, and has_word_timestamps are stored
-                # now so future phases (dubbing, alignment, voice replacement,
-                # lip-sync) can consume per-word timing data without re-running
-                # whisper.cpp on the same media file.
-                params["result_files"] = {
+                result_files: dict[str, str] = {
+                    **subtitle_files,
                     "ass":   str(ass_path),
                     "video": str(output_path),
                 }
-                params["detected_language"]   = transcript.language
-                params["word_count"]          = total_words
-                params["segment_count"]       = segment_count
-                params["has_word_timestamps"] = has_words
+                if inline_vocals_path and inline_instrumental_path:
+                    result_files["vocals"] = str(inline_vocals_path)
+                    result_files["instrumental"] = str(inline_instrumental_path)
 
-                logger.info(
-                    "diag_karaoke_persisting_completion",
-                    job_id=job_id,
-                    result_path=str(output_path),
-                    word_count=total_words,
-                    segment_count=segment_count,
-                )
+                params["result_files"] = result_files
+                params["detected_language"] = transcript.language
+                params["word_count"] = total_words
+                params["segment_count"] = segment_count
+                params["has_word_timestamps"] = has_words
+                _karaoke_persist_whisper_metadata(params, whisper_model_param)
 
                 async with get_db_context() as db:
                     job_svc = JobService(db)
@@ -904,15 +991,17 @@ def karaoke_task(self: Task, job_id: str) -> dict:
                     "karaoke_task_done",
                     job_id=job_id,
                     output=str(output_path),
+                    output_mode=output_mode,
                     word_count=total_words,
                     segment_count=segment_count,
+                    stem_origin=params.get("stem_origin"),
                 )
                 return {
-                    "job_id":        job_id,
-                    "result_path":   str(output_path),
-                    "ass":           str(ass_path),
-                    "video":         str(output_path),
-                    "word_count":    total_words,
+                    "job_id": job_id,
+                    "result_path": str(output_path),
+                    "output_mode": output_mode,
+                    **result_files,
+                    "word_count": total_words,
                     "segment_count": segment_count,
                 }
 
@@ -944,7 +1033,151 @@ def karaoke_task(self: Task, job_id: str) -> dict:
             )
             raise
 
-    return asyncio.run(_run())
+    return run_async(_run())
+
+
+# ── Task: Vocal Separation ────────────────────────────────────────────────────
+
+@celery_app.task(
+    bind=True,
+    base=VoxCloneTask,
+    name="app.tasks.media_tasks.vocal_separation_task",
+    max_retries=1,
+)
+def vocal_separation_task(self: Task, job_id: str) -> dict:
+    """
+    Separate vocals from accompaniment via Demucs (two-stem mode).
+
+    Output (canonical stem owner — stem_origin=canonical):
+        processed/<job_id>_vocals.wav
+        processed/<job_id>_instrumental.wav
+
+    Parameters:
+        separation_model (str, optional — default: DEMUCS_MODEL from settings)
+    """
+
+    async def _run() -> dict:
+        try:
+            logger.info(
+                "diag_vocal_separation_task_entry",
+                job_id=job_id,
+                celery_request_id=self.request.id,
+            )
+            setup_logging()
+
+            ffmpeg = FFmpegService()
+            separation = SourceSeparationService()
+
+            try:
+                await separation.validate()
+            except SourceSeparationError as exc:
+                logger.exception("diag_vocal_separation_validate_failed", job_id=job_id)
+                async with get_db_context() as db:
+                    await JobService(db).mark_failed(job_id, str(exc))
+                raise
+
+            async with get_db_context() as db:
+                job = await JobService(db).mark_started(job_id, self.request.id)
+                media = job.media
+                params: dict = dict(job.parameters or {})
+
+            try:
+                await _update_progress(job_id, 5, "Validating source media")
+
+                source_path = Path(media.file_path)
+                if not source_path.exists():
+                    raise FileNotFoundError(f"Source media not found: {source_path}")
+
+                if media.media_type not in (MediaType.VIDEO, MediaType.AUDIO):
+                    raise ValueError(
+                        f"vocal_separation requires video or audio media; "
+                        f"got '{media.media_type}'."
+                    )
+
+                separation_model: str = validate_separation_model(
+                    str(params.get("separation_model") or settings.DEMUCS_MODEL)
+                )
+
+                logger.info(
+                    "diag_vocal_separation_validation_passed",
+                    job_id=job_id,
+                    media_type=media.media_type,
+                    source_path=str(source_path),
+                    separation_model=separation_model,
+                )
+
+                await _update_progress(job_id, 15, "Extracting stereo audio for separation")
+
+                input_wav = resolve_output_path(
+                    settings.PROCESSED_DIR, job_id, "separation_input", "wav"
+                )
+                await ffmpeg.extract_stereo_wav(source_path, input_wav)
+
+                probe = await ffmpeg.probe(input_wav)
+
+                await _update_progress(job_id, 25, "Separating vocals with Demucs")
+
+                result = await separation.separate(
+                    input_wav,
+                    job_id,
+                    model=separation_model,
+                )
+
+                await _update_progress(job_id, 90, "Finalising")
+
+                params["separation_model"] = result.model
+                params["separation_device"] = result.device
+                params["input_sample_rate"] = settings.SEPARATION_SAMPLE_RATE
+                params["input_channels"] = settings.SEPARATION_CHANNELS
+                params["duration_seconds"] = probe.duration
+                params["stem_origin"] = STEM_ORIGIN_CANONICAL
+                params["intermediate_files"] = {
+                    "separation_input": str(input_wav),
+                }
+                params["result_files"] = {
+                    "vocals": str(result.vocals_path),
+                    "instrumental": str(result.instrumental_path),
+                }
+
+                async with get_db_context() as db:
+                    job_svc = JobService(db)
+                    await job_svc.update(job_id, parameters=params)
+                    await job_svc.mark_completed(job_id, str(result.vocals_path))
+
+                logger.info(
+                    "vocal_separation_task_done",
+                    job_id=job_id,
+                    vocals=str(result.vocals_path),
+                    instrumental=str(result.instrumental_path),
+                    stem_origin=STEM_ORIGIN_CANONICAL,
+                )
+                return {
+                    "job_id": job_id,
+                    "result_path": str(result.vocals_path),
+                    "vocals": str(result.vocals_path),
+                    "instrumental": str(result.instrumental_path),
+                    "stem_origin": STEM_ORIGIN_CANONICAL,
+                }
+
+            except Exception as exc:
+                logger.exception(
+                    "vocal_separation_task_pipeline_failed",
+                    job_id=job_id,
+                    exc_type=type(exc).__name__,
+                )
+                async with get_db_context() as db:
+                    await JobService(db).mark_failed(job_id, str(exc))
+                raise
+
+        except Exception as top_exc:
+            logger.exception(
+                "diag_vocal_separation_run_top_level_exception",
+                job_id=job_id,
+                exc_type=type(top_exc).__name__,
+            )
+            raise
+
+    return run_async(_run())
 
 
 # ── Task: Audio Enhancement (placeholder) ─────────────────────────────────────
@@ -969,7 +1202,7 @@ def audio_enhance_task(self: Task, job_id: str) -> dict:
             )
         return {"job_id": job_id, "status": "not_implemented"}
 
-    return asyncio.run(_run())
+    return run_async(_run())
 
 
 # ── Task Dispatcher ───────────────────────────────────────────────────────────
@@ -979,6 +1212,7 @@ _TASK_MAP: dict[str, Any] = {
     "subtitle_generation": generate_subtitles_task,
     "subtitle_burn": burn_subtitles_task,
     "karaoke": karaoke_task,
+    "vocal_separation": vocal_separation_task,
     "audio_enhance": audio_enhance_task,
     # voice_replacement and voice_clone are defined in JobType.ALL (models/job.py)
     # but are not yet implemented.  They are intentionally absent from _TASK_MAP.

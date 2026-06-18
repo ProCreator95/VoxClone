@@ -1,0 +1,20 @@
+# Phase 5 ML dependencies (source separation via Demucs)
+#
+# Matched torch/torchaudio pair — do NOT use unpinned latest (TorchAudio >=2.9
+# requires TorchCodec; Demucs WAV export then fails after separation completes).
+#
+# Tested: Ubuntu 24.04, Python 3.12, CPU-only
+#   torch==2.8.0  torchaudio==2.8.0  demucs==4.0.1
+#
+# Install (Celery worker venv only):
+#   pip install -r requirements-ml.txt
+#
+# Self-test: docs/reports/PHASE5_MILESTONE2_VOCAL_SEPARATION.md
+# Root cause: docs/reports/PHASE5_M2_DEMUCS_DEPENDENCY_ANALYSIS.md
+
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+torch==2.8.0
+torchaudio==2.8.0
+demucs==4.0.1
+soundfile>=0.12.1

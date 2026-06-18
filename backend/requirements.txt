@@ -35,5 +35,10 @@ ffmpeg-python>=0.2.0
 # whisper.cpp is a compiled C++ binary — no Python package required here.
 # Install instructions: docs/testing/WHISPER_CPP_SETUP.md
 
+# Source separation (Phase 5 — optional, Celery worker only)
+# Do NOT install unpinned torch — TorchAudio >=2.9 breaks Demucs WAV export.
+# See backend/requirements-ml.txt and docs/reports/PHASE5_M2_DEMUCS_DEPENDENCY_ANALYSIS.md
+#   pip install -r requirements-ml.txt
+
 # Utilities
 python-dotenv>=1.0.1

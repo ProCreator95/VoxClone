@@ -58,6 +58,12 @@ class Settings(BaseSettings):
     # Set to "" to let whisper.cpp auto-detect (not recommended for .en models).
     WHISPER_LANGUAGE: str = "en"
 
+    # ── Source separation (Demucs) ────────────────────────────────────────────
+    DEMUCS_MODEL: str = "htdemucs"
+    DEMUCS_DEVICE: str = "cpu"
+    SEPARATION_SAMPLE_RATE: int = 44100
+    SEPARATION_CHANNELS: int = 2
+
     # ── CORS ──────────────────────────────────────────────────────────────────
     ALLOWED_ORIGINS: list[str] = ["*"]
 
