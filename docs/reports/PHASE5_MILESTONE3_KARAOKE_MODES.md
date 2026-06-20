@@ -81,10 +81,8 @@ No `stem_origin` (no separation).
 | transcript / srt / vtt | `/jobs/{id}/download/{transcript\|srt\|vtt}` |
 | ass | `/jobs/{id}/download/ass` |
 | mp4 | `/jobs/{id}/download/karaoke-video` |
-| vocals / instrumental | `/jobs/{id}/download/vocals` or `/instrumental` (inline karaoke + vocal_separation) |
+| vocals / instrumental | `/jobs/{id}/download/vocals` or `/instrumental` (inline karaoke, reused-stem karaoke, vocal_separation) |
 
-## Not yet implemented (Milestone 4)
+## Follow-on (Milestone 4)
 
-- `vocals_only`
-- `music_only`
-- `separation_job_id` reuse
+Stem-only modes and `separation_job_id` reuse are implemented in `PHASE5_MILESTONE4_STEM_REUSE.md`.

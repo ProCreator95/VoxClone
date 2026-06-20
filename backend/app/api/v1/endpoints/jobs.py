@@ -50,8 +50,18 @@ def _inline_stem_karaoke_job(job) -> bool:
 
 
 def _stem_download_allowed(job) -> bool:
-    """Canonical vocal_separation jobs and karaoke jobs with inline stems."""
-    return _canonical_stem_job(job) or _inline_stem_karaoke_job(job)
+    """Jobs that expose vocals/instrumental via /download/vocals or /instrumental."""
+    if _canonical_stem_job(job):
+        return True
+    params = job.parameters or {}
+    if job.job_type != JobType.KARAOKE:
+        return False
+    result_files = params.get("result_files") or {}
+    has_stems = "vocals" in result_files or "instrumental" in result_files
+    if not has_stems:
+        return False
+    stem_origin = params.get("stem_origin")
+    return stem_origin in (STEM_ORIGIN_INLINE, STEM_ORIGIN_CANONICAL)
 
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
@@ -75,7 +85,10 @@ router = APIRouter(prefix="/jobs", tags=["jobs"])
         "- Optional `parameters.separation_model` (default: `htdemucs`)\n\n"
         "**Karaoke** (`job_type`: `karaoke`):\n"
         "- Optional `parameters.output_mode`: "
-        "`karaoke_video_with_vocals` (default) | `karaoke_video_no_vocals`"
+        "`karaoke_video_with_vocals` (default) | `karaoke_video_no_vocals` | "
+        "`vocals_only` | `music_only`\n"
+        "- Optional `parameters.separation_job_id` — reuse stems from a completed "
+        "`vocal_separation` job (skips Demucs)"
     ),
 )
 async def create_job(

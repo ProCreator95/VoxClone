@@ -142,7 +142,7 @@ Interactive docs available at **http://localhost:8000/docs** when running.
 | `audio_extraction` | Extract audio track from video |
 | `subtitle_generation` | Generate SRT/VTT/TXT via whisper.cpp |
 | `subtitle_burn` | Burn subtitles into video |
-| `karaoke` | Karaoke video (`output_mode`: with_vocals or no_vocals) |
+| `karaoke` | Karaoke (`output_mode`: with_vocals, no_vocals, vocals_only, music_only; optional `separation_job_id`) |
 | `vocal_separation` | Demucs two-stem separation (vocals + instrumental) |
 | `audio_enhance` | Dispatches but not implemented (marks failed) |
 | `voice_replacement` | HTTP 422 — not implemented |

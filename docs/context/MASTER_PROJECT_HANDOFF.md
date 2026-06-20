@@ -1,6 +1,6 @@
 # VoxClone — Master Project Handoff
 
-**Date:** 2026-06-18
+**Date:** 2026-06-20
 **Branch:** `feature/source-separation`
 **Commit:** `47be178 Phase 4: karaoke generation complete` (Phase 5 staged, pre-commit)
 **Tags:** `v0.1-foundation` · `phase2-subtitles-working` · `phase3-subtitle-burn` · `phase4-karaoke-generation`
@@ -23,10 +23,10 @@ All AI models run locally — no cloud API keys, no GPU required for Phase 2.
 - Subtitle burn-in — hardcode subtitles into video as H.264 MP4 (Phase 3)
 - Karaoke video with word-level ASS highlighting (Phase 4)
 - Vocal/instrumental stem separation via Demucs (Phase 5)
-- Karaoke over instrumental track (inline Demucs, Phase 5 M3)
+- Karaoke over instrumental track (inline Demucs or reused stems, Phase 5 M3–M4)
+- Stem-only karaoke output (`vocals_only`, `music_only`) with optional `separation_job_id` reuse (Phase 5 M4)
 
 **Planned use cases (future phases):**
-- Karaoke stem-only output modes (`vocals_only`, `music_only`) — Phase 5 M4
 - Audio enhancement (noise removal) — Phase 6
 - Text-to-speech — Phase 7
 - Voice replacement / dubbing — Phase 8
@@ -484,9 +484,9 @@ The `ggml-tiny.en.bin` model drops lyrics during long instrumental sections (~27
 
 **Milestone 3 — Karaoke output modes:** `karaoke_video_with_vocals`, `karaoke_video_no_vocals` (inline Demucs, `stem_origin: inline`).
 
-**Infrastructure:** `requirements-ml.txt` (torch 2.8.0 + demucs 4.0.1), `async_runner.py` (persistent worker loop).
+**Milestone 4 — Stem reuse + stem-only modes:** `vocals_only`, `music_only`, optional `separation_job_id` (reuse canonical stems, skip Demucs).
 
-**Pending M4:** `vocals_only`, `music_only`, `separation_job_id` reuse.
+**Infrastructure:** `requirements-ml.txt` (torch 2.8.0 + demucs 4.0.1), `async_runner.py` (persistent worker loop), `stem_reuse.py` (canonical stem resolution).
 
 See `docs/reports/PHASE5_*.md` for milestone reports and validation evidence.
 
@@ -906,8 +906,7 @@ ffprobe "processed/${BURN_JOB_ID}_subtitled.mp4" 2>&1 | grep -E "Duration|Video:
 | 2 | Subtitle Generation | ✅ `phase2-subtitles-working` |
 | 3 | Subtitle Burn-In | ✅ `phase3-subtitle-burn` |
 | 4 | Karaoke Generation | ✅ `phase4-karaoke-generation` (`47be178`) |
-| 5 | Source Separation / Vocal Removal | ✅ implemented — staged on `feature/source-separation` |
-| 5 M4 | Karaoke stem-only modes + `separation_job_id` | ⏳ next recommended |
+| 5 | Source Separation / Vocal Removal | ✅ complete — staged on `feature/source-separation` |
 | 6 | Audio Enhancement (DeepFilterNet) | ⏳ `audio_enhance_task` placeholder |
 | 7 | Text-to-Speech (Piper) | ⏳ planned |
 | 8 | Voice Replacement | ⏳ planned |
@@ -915,16 +914,12 @@ ffprobe "processed/${BURN_JOB_ID}_subtitled.mp4" 2>&1 | grep -E "Duration|Video:
 | 10 | Flutter Frontend | ⏳ planned |
 | 11 | Production Hardening | ⏳ planned |
 
-### Phase 5 Milestone 4 (next recommended)
-
-- Implement `vocals_only` and `music_only` karaoke output modes
-- Allow karaoke jobs to reuse canonical stems via `separation_job_id`
-- See `docs/reports/PHASE5_MILESTONE3_KARAOKE_MODES.md` — "Not yet implemented"
-
 ### Phase 6 — Audio Enhancement
 
 Noise removal via DeepFilterNet. `audio_enhance_task` is registered in `_TASK_MAP`
 but marks jobs failed with "not yet implemented".
+
+Phase 5 M4 report: `docs/reports/PHASE5_MILESTONE4_STEM_REUSE.md`
 
 ### Phase 7+ — TTS, Voice Replacement, Voice Cloning
 

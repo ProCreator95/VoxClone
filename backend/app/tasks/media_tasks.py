@@ -40,7 +40,13 @@ from app.models.stem_metadata import (
     assert_karaoke_stem_origin,
     karaoke_inline_stem_origin,
 )
-from app.services.karaoke_modes import resolve_karaoke_output_mode
+from app.services.karaoke_modes import (
+    mode_is_stem_only,
+    mode_requires_stems,
+    mode_requires_video_pipeline,
+    resolve_karaoke_output_mode,
+)
+from app.services.stem_reuse import resolve_canonical_stems
 from app.services.separation_models import validate_separation_model
 from app.utils.file_utils import resolve_output_path
 from app.tasks.celery_app import celery_app
@@ -706,6 +712,36 @@ def _karaoke_persist_whisper_metadata(
     params["whisper_model_file"] = model_path.name
 
 
+async def _karaoke_run_inline_demucs(
+    *,
+    job_id: str,
+    source_path: Path,
+    ffmpeg: FFmpegService,
+    separation: SourceSeparationService,
+    separation_model: str,
+    params: dict,
+) -> tuple[Path, Path]:
+    """Extract stereo input and run Demucs; set inline stem_origin on params."""
+    stereo_path = resolve_output_path(
+        settings.PROCESSED_DIR, job_id, "separation_input", "wav"
+    )
+    await ffmpeg.extract_stereo_wav(source_path, stereo_path)
+    intermediate = dict(params.get("intermediate_files") or {})
+    intermediate["separation_input"] = str(stereo_path)
+    params["intermediate_files"] = intermediate
+    params["separation_model"] = separation_model
+
+    sep_result = await separation.separate(
+        stereo_path,
+        job_id,
+        model=separation_model,
+    )
+    stem_origin = karaoke_inline_stem_origin()
+    assert_karaoke_stem_origin(stem_origin)
+    params["stem_origin"] = stem_origin
+    return sep_result.vocals_path, sep_result.instrumental_path
+
+
 # ── Task: Karaoke Generation ──────────────────────────────────────────────────
 
 @celery_app.task(
@@ -733,6 +769,7 @@ def karaoke_task(self: Task, job_id: str) -> dict:
         language        (str, optional  — default: WHISPER_LANGUAGE from settings)
         whisper_model   (str, optional  — tiny | base | small; default: base)
         separation_model (str, optional — Demucs model; inline separation only)
+        separation_job_id (str, optional — reuse completed vocal_separation stems)
         highlight_color (str, optional  — default: "&H0000FFFF&" yellow, ASS AABBGGRR)
         base_color      (str, optional  — default: "&H00FFFFFF&" white)
         font_name       (str, optional  — default: "Arial")
@@ -824,73 +861,129 @@ def karaoke_task(self: Task, job_id: str) -> dict:
 
                 output_mode = resolve_karaoke_output_mode(params)
                 params["output_mode"] = output_mode
+                needs_stems = mode_requires_stems(output_mode)
+                needs_video = mode_requires_video_pipeline(output_mode)
 
-                if media.media_type != MediaType.VIDEO:
+                source_path = Path(media.file_path)
+                if not source_path.exists():
+                    raise FileNotFoundError(f"Source media not found: {source_path}")
+
+                if needs_video:
+                    if media.media_type != MediaType.VIDEO:
+                        raise ValueError(
+                            f"Karaoke video modes require a video file; "
+                            f"source media has media_type='{media.media_type}'."
+                        )
+                elif media.media_type not in (MediaType.VIDEO, MediaType.AUDIO):
                     raise ValueError(
-                        f"Karaoke pipeline requires a video file; "
-                        f"source media has media_type='{media.media_type}'. "
-                        "Upload a video file to use karaoke generation."
+                        f"Karaoke stem modes require video or audio media; "
+                        f"got '{media.media_type}'."
                     )
 
-                video_path = Path(media.file_path)
-                if not video_path.exists():
-                    raise FileNotFoundError(f"Source video not found: {video_path}")
-
+                video_path = source_path if media.media_type == MediaType.VIDEO else None
                 language: Optional[str] = params.get("language") or None
                 whisper_model_param: Optional[str] = params.get("whisper_model")
-                use_inline_separation = output_mode == "karaoke_video_no_vocals"
+                separation_job_id_raw = params.get("separation_job_id")
+                separation_job_id: Optional[str] = (
+                    separation_job_id_raw.strip()
+                    if isinstance(separation_job_id_raw, str) and separation_job_id_raw.strip()
+                    else None
+                )
 
                 logger.info(
                     "diag_karaoke_validation_passed",
                     job_id=job_id,
-                    video_path=str(video_path),
+                    source_path=str(source_path),
                     output_mode=output_mode,
-                    use_inline_separation=use_inline_separation,
+                    needs_stems=needs_stems,
+                    needs_video=needs_video,
+                    separation_job_id=separation_job_id,
                 )
 
-                inline_vocals_path: Optional[Path] = None
-                inline_instrumental_path: Optional[Path] = None
+                vocals_path: Optional[Path] = None
+                instrumental_path: Optional[Path] = None
 
-                whisper_audio_path = settings.PROCESSED_DIR / f"{job_id}_audio.wav"
+                if needs_stems:
+                    if separation_job_id:
+                        await _update_progress(job_id, 10, "Loading reusable stems")
+                        async with get_db_context() as db:
+                            resolved = await resolve_canonical_stems(db, separation_job_id)
+                        vocals_path = resolved.vocals_path
+                        instrumental_path = resolved.instrumental_path
+                        params["separation_job_id"] = resolved.separation_job_id
+                        params["stem_origin"] = STEM_ORIGIN_CANONICAL
+                        if resolved.separation_model:
+                            params["separation_model"] = resolved.separation_model
+                        logger.info(
+                            "karaoke_stems_reused",
+                            job_id=job_id,
+                            separation_job_id=resolved.separation_job_id,
+                            vocals=str(vocals_path),
+                            instrumental=str(instrumental_path),
+                        )
+                    else:
+                        await separation.validate()
+                        await _update_progress(job_id, 10, "Extracting stereo audio for separation")
+                        separation_model = validate_separation_model(
+                            str(params.get("separation_model") or settings.DEMUCS_MODEL)
+                        )
+                        await _update_progress(job_id, 20, "Separating vocals with Demucs")
+                        vocals_path, instrumental_path = await _karaoke_run_inline_demucs(
+                            job_id=job_id,
+                            source_path=source_path,
+                            ffmpeg=ffmpeg,
+                            separation=separation,
+                            separation_model=separation_model,
+                            params=params,
+                        )
 
-                if use_inline_separation:
-                    await separation.validate()
-                    await _update_progress(job_id, 10, "Extracting stereo audio for separation")
+                # ── Stem-only modes (no Whisper / no video) ───────────────────
+                if mode_is_stem_only(output_mode):
+                    await _update_progress(job_id, 90, "Finalising")
+                    if output_mode == "music_only":
+                        if instrumental_path is None:
+                            raise RuntimeError("Instrumental stem missing for music_only mode")
+                        result_files = {"instrumental": str(instrumental_path)}
+                        result_path = str(instrumental_path)
+                    else:
+                        if vocals_path is None:
+                            raise RuntimeError("Vocals stem missing for vocals_only mode")
+                        result_files = {"vocals": str(vocals_path)}
+                        result_path = str(vocals_path)
 
-                    stereo_path = resolve_output_path(
-                        settings.PROCESSED_DIR, job_id, "separation_input", "wav"
+                    params["result_files"] = result_files
+                    async with get_db_context() as db:
+                        job_svc = JobService(db)
+                        await job_svc.update(job_id, parameters=params)
+                        await job_svc.mark_completed(job_id, result_path)
+
+                    logger.info(
+                        "karaoke_task_done",
+                        job_id=job_id,
+                        output_mode=output_mode,
+                        result_path=result_path,
+                        stem_origin=params.get("stem_origin"),
+                        separation_job_id=params.get("separation_job_id"),
+                        demucs_skipped=separation_job_id is not None,
                     )
-                    await ffmpeg.extract_stereo_wav(video_path, stereo_path)
-                    params["intermediate_files"] = {
-                        "separation_input": str(stereo_path),
+                    return {
+                        "job_id": job_id,
+                        "result_path": result_path,
+                        "output_mode": output_mode,
+                        **result_files,
                     }
 
-                    separation_model = validate_separation_model(
-                        str(params.get("separation_model") or settings.DEMUCS_MODEL)
-                    )
-                    params["separation_model"] = separation_model
+                # ── Video karaoke modes ───────────────────────────────────────
+                whisper_audio_path = settings.PROCESSED_DIR / f"{job_id}_audio.wav"
 
-                    await _update_progress(job_id, 20, "Separating vocals with Demucs")
-
-                    sep_result = await separation.separate(
-                        stereo_path,
-                        job_id,
-                        model=separation_model,
-                    )
-                    inline_vocals_path = sep_result.vocals_path
-                    inline_instrumental_path = sep_result.instrumental_path
-
-                    stem_origin = karaoke_inline_stem_origin()
-                    assert_karaoke_stem_origin(stem_origin)
-                    params["stem_origin"] = stem_origin
-
+                if output_mode == "karaoke_video_no_vocals":
+                    if vocals_path is None or instrumental_path is None:
+                        raise RuntimeError("Stems missing for karaoke_video_no_vocals")
                     await _update_progress(job_id, 30, "Preparing isolated vocals for transcription")
-
                     whisper_audio_path = settings.PROCESSED_DIR / f"{job_id}_whisper_audio.wav"
-                    await ffmpeg.transcode_to_whisper_wav(
-                        inline_vocals_path,
-                        whisper_audio_path,
-                    )
+                    await ffmpeg.transcode_to_whisper_wav(vocals_path, whisper_audio_path)
+                    if "intermediate_files" not in params:
+                        params["intermediate_files"] = {}
                 else:
                     await _update_progress(job_id, 10, "Extracting audio from video")
                     await ffmpeg.extract_audio(video_path, whisper_audio_path)
@@ -950,14 +1043,20 @@ def karaoke_task(self: Task, job_id: str) -> dict:
 
                 output_path = settings.PROCESSED_DIR / f"{job_id}_karaoke.mp4"
 
-                if use_inline_separation:
+                if output_mode == "karaoke_video_no_vocals":
+                    if instrumental_path is None or video_path is None:
+                        raise RuntimeError(
+                            "Instrumental stem or video missing for karaoke_video_no_vocals"
+                        )
                     instrumental_video = settings.PROCESSED_DIR / f"{job_id}_instrumental_video.mp4"
                     await ffmpeg.replace_audio(
                         video_path,
-                        inline_instrumental_path,
+                        instrumental_path,
                         instrumental_video,
                     )
-                    params["intermediate_files"]["instrumental_video"] = str(instrumental_video)
+                    params.setdefault("intermediate_files", {})[
+                        "instrumental_video"
+                    ] = str(instrumental_video)
                     burn_video_path = instrumental_video
                 else:
                     burn_video_path = video_path
@@ -971,9 +1070,9 @@ def karaoke_task(self: Task, job_id: str) -> dict:
                     "ass":   str(ass_path),
                     "video": str(output_path),
                 }
-                if inline_vocals_path and inline_instrumental_path:
-                    result_files["vocals"] = str(inline_vocals_path)
-                    result_files["instrumental"] = str(inline_instrumental_path)
+                if vocals_path and instrumental_path:
+                    result_files["vocals"] = str(vocals_path)
+                    result_files["instrumental"] = str(instrumental_path)
 
                 params["result_files"] = result_files
                 params["detected_language"] = transcript.language

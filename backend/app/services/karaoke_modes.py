@@ -16,14 +16,24 @@ KARAOKE_OUTPUT_MODES: frozenset[str] = frozenset({
     "music_only",
 })
 
-# Milestone 3 implements video modes only; stems-only modes follow in Milestone 4.
 KARAOKE_VIDEO_OUTPUT_MODES: frozenset[str] = frozenset({
     "karaoke_video_with_vocals",
     "karaoke_video_no_vocals",
 })
 
-# Subset implemented per milestone; API rejects others until enabled.
-KARAOKE_IMPLEMENTED_OUTPUT_MODES: frozenset[str] = KARAOKE_VIDEO_OUTPUT_MODES
+KARAOKE_STEM_ONLY_OUTPUT_MODES: frozenset[str] = frozenset({
+    "vocals_only",
+    "music_only",
+})
+
+# Modes that require vocal/instrumental stems (inline Demucs or separation_job_id).
+KARAOKE_STEM_DEPENDENT_MODES: frozenset[str] = frozenset({
+    "karaoke_video_no_vocals",
+    "vocals_only",
+    "music_only",
+})
+
+KARAOKE_IMPLEMENTED_OUTPUT_MODES: frozenset[str] = KARAOKE_OUTPUT_MODES
 
 DEFAULT_KARAOKE_OUTPUT_MODE: KaraokeOutputMode = "karaoke_video_with_vocals"
 
@@ -44,3 +54,15 @@ def resolve_karaoke_output_mode(parameters: dict | None) -> str:
     if not isinstance(raw, str):
         raise ValueError("parameters.output_mode must be a string")
     return validate_karaoke_output_mode(raw)
+
+
+def mode_requires_video_pipeline(output_mode: str) -> bool:
+    return output_mode in KARAOKE_VIDEO_OUTPUT_MODES
+
+
+def mode_requires_stems(output_mode: str) -> bool:
+    return output_mode in KARAOKE_STEM_DEPENDENT_MODES
+
+
+def mode_is_stem_only(output_mode: str) -> bool:
+    return output_mode in KARAOKE_STEM_ONLY_OUTPUT_MODES

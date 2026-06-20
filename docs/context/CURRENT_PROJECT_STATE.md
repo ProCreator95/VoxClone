@@ -1,6 +1,6 @@
 # VoxClone — Current Project State
 
-**Date:** 2026-06-18
+**Date:** 2026-06-20
 **Branch:** `feature/source-separation`
 **Last commit:** `47be178 Phase 4: karaoke generation complete` (Phase 5 staged, pre-commit)
 **Tags:** `v0.1-foundation` · `phase2-subtitles-working` · `phase3-subtitle-burn` · `phase4-karaoke-generation`
@@ -72,7 +72,8 @@ VoxClone/
 │   │   │   ├── redis_service.py     async Redis singleton
 │   │   │   ├── source_separation_service.py   Demucs subprocess wrapper
 │   │   │   ├── separation_models.py htdemucs whitelist
-│   │   │   ├── karaoke_modes.py     karaoke output_mode validation
+│   │   │   ├── karaoke_modes.py     karaoke output_mode validation (4 modes)
+│   │   │   ├── stem_reuse.py        canonical stem reuse for karaoke
 │   │   │   ├── whisper_models.py    per-job whisper model resolution
 │   │   │   ├── whisper_service.py   whisper.cpp subprocess
 │   │   │   └── upload_service.py
@@ -115,7 +116,7 @@ Word-level ASS karaoke via whisper.cpp `--output-json-full`, `karaoke_task` (def
 
 Tag: `phase4-karaoke-generation` · Commit: `47be178`
 
-### Phase 5 — Source Separation & Vocal Removal ✅ COMPLETE (pre-commit)
+### Phase 5 — Source Separation & Vocal Removal ✅ COMPLETE
 
 | Component | Status | Notes |
 |-----------|--------|-------|
@@ -124,14 +125,16 @@ Tag: `phase4-karaoke-generation` · Commit: `47be178`
 | `SourceSeparationService` | ✅ | Demucs subprocess; maps `no_vocals.wav` → `instrumental.wav` |
 | `separation_models.py` | ✅ | Whitelist: `htdemucs` only |
 | `stem_metadata.py` | ✅ | `canonical` vs `inline` ownership helpers |
-| `karaoke_modes.py` | ✅ | `karaoke_video_with_vocals`, `karaoke_video_no_vocals` implemented |
-| `karaoke` inline Demucs | ✅ | `output_mode=karaoke_video_no_vocals` → `stem_origin: inline` |
+| `stem_reuse.py` | ✅ | `resolve_canonical_stems()` — validate + load reusable stems |
+| `karaoke_modes.py` | ✅ | All 4 output modes: video + stem-only |
+| `karaoke` inline Demucs | ✅ | `karaoke_video_no_vocals` without reuse → `stem_origin: inline` |
+| `separation_job_id` reuse | ✅ | Skips Demucs; `stem_origin: canonical` on karaoke job |
+| `music_only` / `vocals_only` | ✅ | WAV-only output; no Whisper/video |
 | `async_runner.py` | ✅ | Persistent worker event loop; fixes Redis loop mismatch |
-| `GET /jobs/{id}/download/vocals` | ✅ | vocal_separation + inline karaoke |
-| `GET /jobs/{id}/download/instrumental` | ✅ | vocal_separation + inline karaoke |
+| `GET /jobs/{id}/download/vocals` | ✅ | vocal_separation + inline/reused karaoke |
+| `GET /jobs/{id}/download/instrumental` | ✅ | vocal_separation + inline/reused karaoke |
 | `requirements-ml.txt` | ✅ | `torch==2.8.0`, `torchaudio==2.8.0`, `demucs==4.0.1` |
 | Demucs dependency validation | ✅ | Manual + self-test passed (see Phase 5 reports) |
-| **Not in M4 yet** | ⏳ | `vocals_only`, `music_only`, `separation_job_id` reuse |
 
 **Worker ML install:**
 
@@ -188,6 +191,17 @@ Report: `docs/reports/PHASE5_M2_DEMUCS_DEPENDENCY_ANALYSIS.md`
 ### Async event loop fix
 
 Celery tasks now use `run_async()` on a single persistent loop shared with `worker_process_init` Redis connect. Prevents `mark_started()` → `set_progress()` loop mismatch.
+
+### Milestone 4 — stem reuse (2026-06-20)
+
+| Test | Result |
+|------|--------|
+| A — vocal_separation stems | ✅ `2ed4465c-...` vocals + instrumental on disk |
+| B — `music_only` + `separation_job_id` | ✅ Demucs skipped, canonical instrumental reused |
+| C — `vocals_only` + `separation_job_id` | ✅ Canonical vocals reused |
+| D — `karaoke_video_no_vocals` + reuse | ✅ Video generated, no second Demucs run |
+
+Report: `docs/reports/PHASE5_MILESTONE4_STEM_REUSE.md`
 
 ---
 

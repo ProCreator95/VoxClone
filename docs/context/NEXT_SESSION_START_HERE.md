@@ -4,19 +4,19 @@
 
 ---
 
-## Current State (as of 2026-06-18)
+## Current State (as of 2026-06-20)
 
-**Phases 1–5 are implemented.** Phase 5 is staged on `feature/source-separation` and pending commit.
+**Phases 1–5 are complete.** Phase 5 Milestone 4 (stem reuse + stem-only modes) is implemented on `feature/source-separation` and pending commit.
 
 ```
 Phase 1: Upload → ffprobe → Media + Job persistence → Redis progress
 Phase 2: subtitle_generation → whisper.cpp → SRT + VTT + TXT
 Phase 3: subtitle_burn → FFmpeg H.264 burn-in → burned MP4
 Phase 4: karaoke → word-level ASS → karaoke MP4 (with_vocals mode)
-Phase 5: vocal_separation + karaoke modes → Demucs stems + per-job whisper models
+Phase 5: vocal_separation + all karaoke modes + separation_job_id reuse
 ```
 
-**Git state:** `feature/source-separation` · HEAD `47be178` (Phase 4) · Phase 5 changes staged · tag `phase4-karaoke-generation`
+**Git state:** `feature/source-separation` · HEAD `47be178` (Phase 4) · Phase 5 M1–M4 changes staged · tag `phase4-karaoke-generation`
 
 ---
 
@@ -30,12 +30,7 @@ Phase 5: vocal_separation + karaoke modes → Demucs stems + per-job whisper mod
 
 ### Recommended next development work
 
-**Phase 5 Milestone 4** (remaining scope in codebase):
-
-- Karaoke output modes: `vocals_only`, `music_only`
-- Reuse canonical stems via `separation_job_id` (point at a completed `vocal_separation` job)
-
-**Then Phase 6 — Audio Enhancement:**
+**Phase 6 — Audio Enhancement:**
 
 - Implement DeepFilterNet in `audio_enhance_task` (currently dispatches then marks failed)
 
@@ -100,7 +95,8 @@ curl -O -J "http://localhost:8000/api/v1/jobs/$JOB_ID/download/instrumental"
 | `app/tasks/celery_app.py` | Redis connect on worker loop via `get_worker_event_loop()` |
 | `app/services/source_separation_service.py` | Demucs subprocess wrapper |
 | `app/services/separation_models.py` | `htdemucs` whitelist |
-| `app/services/karaoke_modes.py` | Karaoke `output_mode` validation |
+| `app/services/karaoke_modes.py` | Karaoke `output_mode` validation (4 modes) |
+| `app/services/stem_reuse.py` | Canonical stem reuse via `separation_job_id` |
 | `app/services/whisper_models.py` | Per-job whisper model aliases + defaults |
 | `app/models/stem_metadata.py` | `canonical` vs `inline` stem ownership |
 | `requirements-ml.txt` | Pinned torch/torchaudio/demucs |

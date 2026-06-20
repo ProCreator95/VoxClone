@@ -9,6 +9,7 @@ from app.models.job import JobType
 from app.services.karaoke_modes import (
     DEFAULT_KARAOKE_OUTPUT_MODE,
     KARAOKE_IMPLEMENTED_OUTPUT_MODES,
+    mode_requires_stems,
     validate_karaoke_output_mode,
 )
 from app.services.separation_models import validate_separation_model
@@ -23,6 +24,8 @@ _WHISPER_JOB_TYPES = frozenset({
 })
 
 _VOCAL_SEPARATION_JOB_TYPES = frozenset({JobType.VOCAL_SEPARATION})
+_KARAOKE_JOB_TYPES = frozenset({JobType.KARAOKE})
+_SEPARATION_MODEL_JOB_TYPES = _VOCAL_SEPARATION_JOB_TYPES | _KARAOKE_JOB_TYPES
 
 
 class JobCreate(BaseModel):
@@ -67,11 +70,35 @@ class JobCreate(BaseModel):
             if not isinstance(separation_model, str):
                 raise ValueError("parameters.separation_model must be a string")
             validate_separation_model(separation_model)
-            if self.job_type not in _VOCAL_SEPARATION_JOB_TYPES:
+            if self.job_type not in _SEPARATION_MODEL_JOB_TYPES:
                 raise ValueError(
                     "parameters.separation_model is only supported for "
-                    f"job_type '{JobType.VOCAL_SEPARATION}'"
+                    f"job types: {sorted(_SEPARATION_MODEL_JOB_TYPES)}"
                 )
+
+        separation_job_id = params.get("separation_job_id")
+        if separation_job_id is not None:
+            if not isinstance(separation_job_id, str) or not separation_job_id.strip():
+                raise ValueError(
+                    "parameters.separation_job_id must be a non-empty string"
+                )
+            if self.job_type != JobType.KARAOKE:
+                raise ValueError(
+                    "parameters.separation_job_id is only supported for "
+                    f"job_type '{JobType.KARAOKE}'"
+                )
+            resolved_mode = (
+                params.get("output_mode")
+                if params.get("output_mode") is not None
+                else DEFAULT_KARAOKE_OUTPUT_MODE
+            )
+            if isinstance(resolved_mode, str):
+                validate_karaoke_output_mode(resolved_mode)
+                if not mode_requires_stems(resolved_mode):
+                    raise ValueError(
+                        "parameters.separation_job_id is only supported for output modes "
+                        "that use stems: karaoke_video_no_vocals, vocals_only, music_only"
+                    )
 
         output_mode = params.get("output_mode")
         if output_mode is not None:
