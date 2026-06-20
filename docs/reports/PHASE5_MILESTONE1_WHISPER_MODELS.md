@@ -1,6 +1,6 @@
 # Phase 5 — Milestone 1: Per-Job Whisper Model Selection
 
-**Status:** Complete (awaiting review)  
+**Status:** Complete (included in Phase 5 pre-commit)
 **Scope:** `whisper_model` parameter for `subtitle_generation` and `karaoke` only. No Demucs.
 
 ---

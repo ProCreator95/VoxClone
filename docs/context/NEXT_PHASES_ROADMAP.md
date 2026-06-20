@@ -13,7 +13,10 @@
 > - Phase 3 implementation steps describe the stub state, not the completed implementation
 >
 > **Use instead:**
-> `docs/context/MASTER_PROJECT_HANDOFF.md` (Section 13 — Remaining Roadmap, Section 19 — How to Start Phase 4)
+> `docs/context/MASTER_PROJECT_HANDOFF.md` (Section 13 — Remaining Roadmap)
+>
+> **Note (2026-06-18):** Phases 3–5 are implemented on branch `feature/source-separation`.
+> Phase 5 covers source separation (Demucs), not the "Audio Enhancement" label used in this doc.
 
 ---
 

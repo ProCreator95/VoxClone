@@ -1,7 +1,7 @@
 # Phase 5 Milestone 2 — Demucs Dependency Root Cause & Fix
 
-**Status:** Analysis complete — dependency pin proposed  
-**Date:** 2026-06-18  
+**Status:** Validated — dependency pin confirmed on Ubuntu 24.04 / Python 3.12
+**Date:** 2026-06-18
 **Scope:** `vocal_separation` / Demucs subprocess save failure (not separation logic)
 
 ---

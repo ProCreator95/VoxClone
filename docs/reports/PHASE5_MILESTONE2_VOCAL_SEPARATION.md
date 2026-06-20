@@ -1,7 +1,6 @@
 # Phase 5 — Milestone 2: Vocal Separation Job
 
-**Status:** Complete (awaiting review)  
-**Scope:** `vocal_separation` job type, Demucs subprocess, canonical stem outputs.
+**Status:** Complete (included in Phase 5 pre-commit)
 
 ---
 

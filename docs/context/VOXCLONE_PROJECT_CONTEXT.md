@@ -13,7 +13,7 @@
 > - Redis progress cache key format shown as `job_progress:{job_id}` — actual format is `job:progress:{job_id}`
 > - Redis TTL shown as 3600s — actual TTL is 86400s (24h)
 > - Config schema (`LOGS_DIR`, `MAX_UPLOAD_SIZE_BYTES`) may not match current `config.py`
-> - Git state section shows tag `v0.1-foundation` only; current tags include `phase2-subtitles-working` and `phase3-subtitle-burn`
+> - Git state section predates Phase 4–5; current branch is `feature/source-separation`
 >
 > **Use instead:**
 > `docs/context/MASTER_PROJECT_HANDOFF.md` — single authoritative reference

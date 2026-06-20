@@ -1,7 +1,7 @@
 # VoxClone — Known Bugs and Root Causes
 
-**Branch:** `feature/karaoke-generation`
-**Last updated:** 2026-06-15
+**Branch:** `feature/source-separation`
+**Last updated:** 2026-06-18
 **All bugs listed here have been fixed. See "Known Limitations" at the bottom for non-bug behavioural constraints.**
 
 ---
@@ -29,20 +29,20 @@ The first call to `redis_service.set_progress()` inside `mark_started()` raises
 `status=queued`. `mark_failed()` is never called because it is inside the
 inner try/except block that the exception skipped past.
 
-### Fix Applied — `app/tasks/celery_app.py`
+### Fix Applied — `app/tasks/celery_app.py` + `app/tasks/async_runner.py`
+
+Initial fix connected Redis in `worker_process_init`. A later refinement (Bug 9)
+replaced `asyncio.run()` with a **persistent worker event loop** so the Redis
+client and task coroutines share the same loop.
 
 ```python
-@worker_process_init.connect
-def on_worker_process_init(**kwargs) -> None:
-    """Called inside each forked worker process."""
-    setup_logging()
-    from app.services.redis_service import redis_service
-    asyncio.run(redis_service.connect())
-    logger.info("celery_worker_process_redis_connected")
+# celery_app.py — worker_process_init
+loop = get_worker_event_loop()
+loop.run_until_complete(redis_service.connect())
 ```
 
 **Verification:** Celery log shows `celery_worker_process_redis_connected` once
-per worker process on startup.
+per worker process on startup; tasks reach `mark_started()` without Redis errors.
 
 ---
 
@@ -225,18 +225,6 @@ cmd = [
 
 ---
 
-## Bug Fix Order by Phase
-
-```
-Phase 2:
-  Bug 1 (Redis) → Bug 2 (MissingGreenlet) → Bug 3 (LD_LIBRARY_PATH) → Phase 2 working
-
-Phase 3:
-  Bug 4 (filter escaping) → Bug 5 (no codec) → Phase 3 working
-```
-
----
-
 ## Bug 6 — FastAPI route ordering: `download/video` shadowed by `download/{format_type}` ✅ FIXED
 
 **Phase discovered:** 3 (post-validation)  **Commit fixed:** after `2f9f643`
@@ -289,9 +277,101 @@ with `Content-Type: video/mp4`.
 
 ---
 
+## Bug 7 — Unimplemented job types returned HTTP 500 ✅ FIXED
+
+**Phase discovered:** 4  **Commit fixed:** `47be178`
+
+### Symptom
+
+Creating a job with `job_type: voice_replacement` or `voice_clone` created a DB
+record in `queued` status, then the API returned HTTP 500 when dispatch failed.
+
+### Root Cause
+
+`JobType.ALL` includes planned types, but `_TASK_MAP` did not register tasks for
+them. `create_job()` dispatched anyway and crashed.
+
+### Fix Applied
+
+`IMPLEMENTED_JOB_TYPES` derived from `_TASK_MAP`; `create_job()` returns HTTP 422
+before creating a DB record for unregistered types.
+
+---
+
+## Bug 8 — Demucs WAV export fails (TorchCodec / unpinned PyTorch) ✅ FIXED
+
+**Phase discovered:** 5  **Fix:** pinned ML stack in `requirements-ml.txt`
+
+### Symptom
+
+Demucs separation reached 100% then crashed saving stems:
+
+```
+ImportError: TorchCodec is required for save_with_torchcodec
+RuntimeError: Could not load libtorchcodec
+```
+
+### Root Cause
+
+Unpinned `pip install torch torchaudio` pulled TorchAudio ≥2.9, which routes
+`torchaudio.save()` through TorchCodec. Demucs 4.0.1 calls `ta.save()` for WAV
+export. Mismatched or missing TorchCodec wheels fail on CPU Ubuntu 24.04.
+
+### Fix Applied
+
+Pin matched pre-TorchCodec wheels in `backend/requirements-ml.txt`:
+
+```
+torch==2.8.0
+torchaudio==2.8.0
+demucs==4.0.1
+```
+
+See `docs/reports/PHASE5_M2_DEMUCS_DEPENDENCY_ANALYSIS.md` for validation evidence.
+
+---
+
+## Bug 9 — Redis `Future attached to a different loop` ✅ FIXED
+
+**Phase discovered:** 5  **Fix:** `app/tasks/async_runner.py`
+
+### Symptom
+
+```
+RuntimeError: Task ... got Future <Future pending> attached to a different loop
+```
+
+Failure at `vocal_separation_task` → `mark_started()` → `redis_service.set_progress()`.
+
+### Root Cause
+
+`worker_process_init` called `asyncio.run(redis_service.connect())`, creating and
+**closing** event loop A. Each Celery task called `asyncio.run(_run())`, creating
+a new loop B. The `redis.asyncio` client bound to loop A was reused on loop B.
+
+All tasks calling `mark_started()` or `update_progress()` were vulnerable — not
+only `vocal_separation_task`.
+
+### Fix Applied
+
+One persistent loop per worker process:
+
+```python
+# app/tasks/async_runner.py
+def run_async(coro):
+    return get_worker_event_loop().run_until_complete(coro)
+```
+
+- `worker_process_init` / `worker_process_shutdown`: `get_worker_event_loop().run_until_complete(...)`
+- All Celery tasks: `return run_async(_run())` instead of `asyncio.run(_run())`
+
+**Verification:** `mark_started()` and progress updates succeed after worker restart.
+
+---
+
 ## No Known Open Bugs
 
-As of Phase 4 (pre-commit), no unresolved bugs are known.
+As of Phase 5 (pre-commit on `feature/source-separation`), no unresolved bugs are known.
 
 ---
 
@@ -353,12 +433,16 @@ Both `ggml-base.en.bin` and `ggml-small.en.bin` are already present in
 
 ```
 Phase 2:
-  Bug 1 (Redis) → Bug 2 (MissingGreenlet) → Bug 3 (LD_LIBRARY_PATH) → Phase 2 working
+  Bug 1 (Redis) → Bug 2 (MissingGreenlet) → Bug 3 (LD_LIBRARY_PATH)
 
 Phase 3:
-  Bug 4 (filter escaping) → Bug 5 (no codec) → Bug 6 (route order) → Phase 3 working
+  Bug 4 (filter escaping) → Bug 5 (no codec) → Bug 6 (route order)
 
 Phase 4:
-  No bugs found. One pre-existing issue fixed: voice_replacement/voice_clone
-  returned HTTP 500; now returns HTTP 422 via IMPLEMENTED_JOB_TYPES guard.
+  Bug 7 (IMPLEMENTED_JOB_TYPES → HTTP 422)
+
+Phase 5:
+  Bug 8 (Demucs TorchCodec — pin torch 2.8.0)
+  Bug 9 (async loop ownership — async_runner + run_async)
+  Bug 1 refined: worker_process_init now uses persistent loop (see Bug 9)
 ```

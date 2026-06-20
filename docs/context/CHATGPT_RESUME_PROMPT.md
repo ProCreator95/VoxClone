@@ -5,7 +5,7 @@
 > This document is retained for historical reference only.
 >
 > **Reasons for deprecation:**
-> - Branch referenced (`feature/subtitle-pipeline`) no longer exists as the active branch
+> - Branch referenced is not the active branch (`feature/source-separation`)
 > - Describes Bugs 1 and 2 as unresolved; both were fixed in commit `94f77e0`
 > - States "Next Phase After This Is Fixed: Phase 3" — Phase 3 is complete as of `2f9f643`
 > - Celery command missing `--queues media,ai` (required since Phase 2)

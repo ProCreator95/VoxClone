@@ -12,6 +12,8 @@
 >
 > **Use instead:**
 > `docs/context/MASTER_PROJECT_HANDOFF.md` — single authoritative reference
+>
+> **Note (2026-06-18):** Active branch is `feature/source-separation`. Phases 1–5 are implemented.
 
 ---
 

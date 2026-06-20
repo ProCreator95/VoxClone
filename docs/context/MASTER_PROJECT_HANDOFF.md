@@ -1,10 +1,10 @@
 # VoxClone — Master Project Handoff
 
-**Date:** 2026-06-15  
-**Branch:** `feature/karaoke-generation`  
-**Commit:** `2f9f643 Phase 3: subtitle burn-in complete` (Phase 4 not yet committed — pre-commit review in progress)  
-**Tags:** `v0.1-foundation` (Phase 1) · `phase2-subtitles-working` (Phase 2) · `phase3-subtitle-burn` (Phase 3)  
-**Working tree:** Phase 4 changes staged, awaiting commit
+**Date:** 2026-06-18
+**Branch:** `feature/source-separation`
+**Commit:** `47be178 Phase 4: karaoke generation complete` (Phase 5 staged, pre-commit)
+**Tags:** `v0.1-foundation` · `phase2-subtitles-working` · `phase3-subtitle-burn` · `phase4-karaoke-generation`
+**Working tree:** Phase 5 source separation + karaoke modes staged, awaiting commit
 
 > This document is completely self-contained. A new developer can continue
 > the project using only this file.
@@ -13,21 +13,24 @@
 
 ## 1. Project Overview
 
-**VoxClone** is an offline-first AI media processing platform.  
+**VoxClone** is an offline-first AI media processing platform.
 Users upload a video or audio file, choose a processing pipeline (subtitle
 generation, audio extraction, voice cloning, etc.), and download the result.
 All AI models run locally — no cloud API keys, no GPU required for Phase 2.
 
-**Primary use cases (current — Phases 1–3 complete):**
+**Primary use cases (Phases 1–5 complete):**
 - Automatic subtitle generation from any video or audio (Phase 2)
 - Subtitle burn-in — hardcode subtitles into video as H.264 MP4 (Phase 3)
+- Karaoke video with word-level ASS highlighting (Phase 4)
+- Vocal/instrumental stem separation via Demucs (Phase 5)
+- Karaoke over instrumental track (inline Demucs, Phase 5 M3)
 
 **Planned use cases (future phases):**
-- Vocal removal / karaoke
-- Audio enhancement (noise removal)
-- Text-to-speech
-- Voice replacement / dubbing
-- Voice cloning
+- Karaoke stem-only output modes (`vocals_only`, `music_only`) — Phase 5 M4
+- Audio enhancement (noise removal) — Phase 6
+- Text-to-speech — Phase 7
+- Voice replacement / dubbing — Phase 8
+- Voice cloning — Phase 9+
 
 ---
 
@@ -61,19 +64,26 @@ All AI models run locally — no cloud API keys, no GPU required for Phase 2.
 │                →  burn_subtitles_task                    │
 │                                                          │
 │  queue: ai     →  generate_subtitles_task                │
+│                →  karaoke_task                           │
+│                →  vocal_separation_task                  │
+│                →  audio_enhance_task (placeholder)       │
 │                     │                                    │
 │              ┌──────▼──────────────────┐                │
 │              │   FFmpegService          │                │
-│              │   (extract 16kHz WAV)    │                │
 │              └──────┬──────────────────┘                │
 │              ┌──────▼──────────────────┐                │
 │              │   WhisperService         │                │
-│              │   whisper.cpp subprocess │                │
-│              │   (LD_LIBRARY_PATH set)  │                │
+│              │   (whisper.cpp)          │                │
 │              └──────┬──────────────────┘                │
-│                     │ TranscriptResult                   │
+│              ┌──────▼──────────────────┐                │
+│              │ SourceSeparationService  │                │
+│              │ (Demucs subprocess)      │                │
+│              └──────┬──────────────────┘                │
 │                     ↓                                    │
-│         .srt  .vtt  .txt  written to processed/          │
+│         outputs written to processed/                    │
+│                                                          │
+│  Async runtime: one persistent event loop per worker     │
+│  (app/tasks/async_runner.py — run_async())               │
 └──────────────────────────────────────────────────────────┘
 ```
 
@@ -105,6 +115,7 @@ POST /jobs {job_type: "subtitle_generation", media_id: X}
 | Message broker | Redis | system |
 | Progress cache | Redis | same instance |
 | Speech recognition | whisper.cpp (CLI binary) | built from source |
+| Source separation | Demucs 4.0.1 + PyTorch 2.8.0 CPU | worker-only; see `requirements-ml.txt` |
 | Media processing | FFmpeg | 6.1.1 (system) |
 | Logging | structlog | JSON format |
 | Settings | pydantic-settings | .env file |
@@ -135,29 +146,36 @@ VoxClone/
 │   │   │   └── init_db.py           create_tables() on startup
 │   │   ├── models/
 │   │   │   ├── media.py             Media SQLAlchemy model
-│   │   │   └── job.py               Job model + JobType + JobStatus
+│   │   │   ├── job.py               Job model + JobType + JobStatus
+│   │   │   └── stem_metadata.py     canonical vs inline stem ownership
 │   │   ├── schemas/
-│   │   │   ├── job.py               JobCreate, JobResponse
+│   │   │   ├── job.py               JobCreate, JobResponse, parameter validation
 │   │   │   └── media.py             MediaResponse
 │   │   ├── services/
-│   │   │   ├── ffmpeg_service.py    FFmpeg wrapper (probe, extract, burn)
+│   │   │   ├── ffmpeg_service.py    FFmpeg wrapper (probe, extract, burn, stereo WAV)
 │   │   │   ├── job_service.py       Job CRUD + lifecycle
 │   │   │   ├── media_service.py     Media CRUD
 │   │   │   ├── redis_service.py     Redis singleton + progress cache
 │   │   │   ├── upload_service.py    File ingestion pipeline
-│   │   │   └── whisper_service.py   whisper.cpp subprocess wrapper
+│   │   │   ├── whisper_service.py   whisper.cpp subprocess wrapper
+│   │   │   ├── whisper_models.py    Per-job whisper model aliases + defaults
+│   │   │   ├── source_separation_service.py   Demucs subprocess wrapper
+│   │   │   ├── separation_models.py htdemucs whitelist
+│   │   │   └── karaoke_modes.py     Karaoke output_mode validation
 │   │   └── tasks/
+│   │       ├── async_runner.py      Persistent worker event loop + run_async()
 │   │       ├── celery_app.py        Celery config + worker_process_init hook
 │   │       └── media_tasks.py       All Celery task implementations
 │   ├── uploads/                     Uploaded media files
 │   ├── processed/                   Pipeline output files
 │   ├── models/                      GGML model files
-│   │   ├── ggml-tiny.en.bin         75 MB  (active default)
-│   │   ├── ggml-base.en.bin         142 MB
+│   │   ├── ggml-tiny.en.bin         75 MB  (subtitle_generation default)
+│   │   ├── ggml-base.en.bin         142 MB (karaoke default)
 │   │   └── ggml-small.en.bin        466 MB
 │   ├── .env                         Active configuration
 │   ├── .env.example                 Configuration template
-│   └── requirements.txt
+│   ├── requirements.txt
+│   └── requirements-ml.txt          Pinned torch/torchaudio/demucs (worker only)
 ├── tools/
 │   └── whisper.cpp/                 whisper.cpp source + build output
 │       └── build/
@@ -203,11 +221,16 @@ WHISPER_CPP_BINARY=../tools/whisper.cpp/build/bin/whisper-cli
 WHISPER_MODEL_PATH=models/ggml-tiny.en.bin
 WHISPER_THREADS=8
 WHISPER_LANGUAGE=en
+
+# ── Source separation (Demucs — Celery worker only) ─────
+DEMUCS_MODEL=htdemucs
+DEMUCS_DEVICE=cpu
+SEPARATION_SAMPLE_RATE=44100
+SEPARATION_CHANNELS=2
 ```
 
-> **Note:** `WHISPER_CPP_BINARY` is a path relative to `backend/` (the cwd when
-> running uvicorn and celery). The binary is resolved to an absolute path by
-> `_resolve_binary()` in `whisper_service.py` before any subprocess call.
+> **ML worker install:** `pip install -r requirements-ml.txt` (pinned torch 2.8.0 + demucs 4.0.1).
+> See `docs/reports/PHASE5_MILESTONE2_VOCAL_SEPARATION.md` for self-test.
 
 ---
 
@@ -233,21 +256,23 @@ redis-cli ping   # → PONG
 uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-FastAPI startup connects Redis and creates DB tables via the lifespan hook.  
+FastAPI startup connects Redis and creates DB tables via the lifespan hook.
 API docs: http://localhost:8000/docs
 
 ### Terminal 3 — Celery Worker
 
 ```bash
+# Install ML deps once per worker venv (Demucs / vocal_separation / karaoke no_vocals)
+pip install -r requirements-ml.txt
+
 celery -A app.tasks.celery_app:celery_app worker \
   --queues media,ai \
-  --concurrency 2 \
+  --concurrency 1 \
   --loglevel INFO
 ```
 
-**Both queues are required.** `generate_subtitles_task` routes to `ai`,
-`extract_audio_task` and `burn_subtitles_task` route to `media`.  
-Without `--queues media,ai` those tasks will never be picked up.
+**Both queues are required.** Tasks route to `media` or `ai` per `celery_app.py`.
+Use `--concurrency 1` when running Demucs to reduce OOM risk (see `PHASE5_STEM_OWNERSHIP_AND_OPS.md`).
 
 **Expected startup log lines:**
 ```
@@ -278,6 +303,8 @@ Base URL: `http://localhost:8000/api/v1`
 | GET | `/jobs/{id}/download/video` | Download burned-subtitle MP4 (subtitle_burn jobs) |
 | GET | `/jobs/{id}/download/ass` | Download ASS karaoke subtitle file (karaoke jobs) |
 | GET | `/jobs/{id}/download/karaoke-video` | Download karaoke MP4 (karaoke jobs) |
+| GET | `/jobs/{id}/download/vocals` | Download vocals stem WAV (vocal_separation / inline karaoke) |
+| GET | `/jobs/{id}/download/instrumental` | Download instrumental stem WAV |
 | DELETE | `/jobs/{id}` | Cancel an active job |
 
 ### Job creation payload
@@ -300,10 +327,19 @@ POST /api/v1/jobs
 | `audio_extraction` | 1 | ✅ implemented |
 | `subtitle_generation` | 2 | ✅ implemented |
 | `subtitle_burn` | 3 | ✅ implemented |
-| `karaoke` | 4 | ✅ implemented |
-| `audio_enhance` | 5 | ⏳ planned — returns 422 |
-| `voice_replacement` | 8 | ⏳ planned — returns 422 |
-| `voice_clone` | 9+ | ⏳ planned — returns 422 |
+| `karaoke` | 4–5 | ✅ implemented (modes: `karaoke_video_with_vocals`, `karaoke_video_no_vocals`) |
+| `vocal_separation` | 5 | ✅ implemented |
+| `audio_enhance` | 6 | ⏳ dispatches but marks failed — DeepFilterNet not implemented |
+| `voice_replacement` | 8 | ⏳ HTTP 422 — not in `_TASK_MAP` |
+| `voice_clone` | 9+ | ⏳ HTTP 422 — not in `_TASK_MAP` |
+
+**Common parameters (Phase 5):**
+
+```json
+{ "whisper_model": "tiny" | "base" | "small" }
+{ "separation_model": "htdemucs" }
+{ "output_mode": "karaoke_video_with_vocals" | "karaoke_video_no_vocals" }
+```
 
 ---
 
@@ -437,8 +473,22 @@ POST /api/v1/jobs
 | Word timestamps present | ✅ |
 | Karaoke highlight effect | ✅ (confirmed in MP4 playback) |
 
-**Known limitation — Whisper model accuracy on music content:**  
+**Known limitation — Whisper model accuracy on music content:**
 The `ggml-tiny.en.bin` model drops lyrics during long instrumental sections (~27s and ~30s gaps observed in validation). This is a Whisper model limitation, not a code defect — the same gaps appear identically in `subtitle_generation` output (using `--output-json`) and `karaoke` output (using `--output-json-full`). See section 19 and `KNOWN_BUGS_AND_ROOT_CAUSES.md` for details. Use `ggml-base.en.bin` for better accuracy on music videos.
+
+### Phase 5 — Source Separation & Vocal Removal ✅ COMPLETE (pre-commit)
+
+**Milestone 1 — Per-job Whisper models:** `whisper_models.py`; defaults `subtitle_generation` → `tiny`, `karaoke` → `base`.
+
+**Milestone 2 — Canonical vocal separation:** `vocal_separation` job type, `SourceSeparationService` (Demucs subprocess), `stem_origin: canonical`, stem download endpoints.
+
+**Milestone 3 — Karaoke output modes:** `karaoke_video_with_vocals`, `karaoke_video_no_vocals` (inline Demucs, `stem_origin: inline`).
+
+**Infrastructure:** `requirements-ml.txt` (torch 2.8.0 + demucs 4.0.1), `async_runner.py` (persistent worker loop).
+
+**Pending M4:** `vocals_only`, `music_only`, `separation_job_id` reuse.
+
+See `docs/reports/PHASE5_*.md` for milestone reports and validation evidence.
 
 ---
 
@@ -446,29 +496,24 @@ The `ggml-tiny.en.bin` model drops lyrics during long instrumental sections (~27
 
 ### Fix 1 — `backend/app/tasks/celery_app.py`
 
-Added `worker_process_init` and `worker_process_shutdown` signal handlers:
+Added `worker_process_init` and `worker_process_shutdown` signal handlers using a
+**persistent worker event loop** (`app/tasks/async_runner.py`):
 
 ```python
-import asyncio
-from celery.signals import worker_process_init, worker_process_shutdown
+from app.tasks.async_runner import get_worker_event_loop
 
 @worker_process_init.connect
 def on_worker_process_init(**kwargs) -> None:
     setup_logging()
     from app.services.redis_service import redis_service
-    asyncio.run(redis_service.connect())
+    loop = get_worker_event_loop()
+    loop.run_until_complete(redis_service.connect())
     logger.info("celery_worker_process_redis_connected")
-
-@worker_process_shutdown.connect
-def on_worker_process_shutdown(**kwargs) -> None:
-    from app.services.redis_service import redis_service
-    asyncio.run(redis_service.disconnect())
-    logger.info("celery_worker_process_redis_disconnected")
 ```
 
-**Why `worker_process_init` and not `worker_ready`:**  
-`worker_ready` fires in the parent supervisor process. `worker_process_init`
-fires inside each **forked child process** — where tasks actually execute.
+Celery tasks call `run_async(coro)` — **not** `asyncio.run(coro)` — so Redis,
+SQLAlchemy async sessions, and subprocess helpers share the same loop. See Bug 9
+in `KNOWN_BUGS_AND_ROOT_CAUSES.md`.
 
 ### Fix 2 — `backend/app/services/job_service.py`
 
@@ -650,12 +695,18 @@ relationship inside an async Celery task without first loading it with
 routes can use it via the greenlet context). In Celery tasks, always use
 `get_by_id_with_media()` or an explicit `selectinload`.
 
-### Redis connect is per-process, not per-task
+### Redis connect is per-process, on a persistent event loop
 
-`worker_process_init` fires once per forked worker process. The Redis
-connection is then shared across all tasks that run in that process. This is
-correct — `redis.asyncio.Redis` is connection-pool-based and handles
-concurrency internally.
+`worker_process_init` connects Redis once per forked worker on
+`get_worker_event_loop()`. Tasks must use `run_async()` from `async_runner.py` —
+**never** `asyncio.run()` per task — or `redis.asyncio` clients raise
+`Future attached to a different loop` (Bug 9).
+
+### Demucs / ML dependencies are worker-only
+
+Install `requirements-ml.txt` on Celery workers that run `vocal_separation` or
+inline karaoke separation. Pin `torch==2.8.0` + `torchaudio==2.8.0`; unpinned
+installs break Demucs WAV export via TorchCodec (Bug 8).
 
 ### FastAPI route declaration order is significant
 
@@ -849,63 +900,36 @@ ffprobe "processed/${BURN_JOB_ID}_subtitled.mp4" 2>&1 | grep -E "Duration|Video:
 
 ## 13. Remaining Roadmap
 
-### Phase 3 — Subtitle Burn-In ✅ COMPLETE
+| Phase | Name | Status |
+|-------|------|--------|
+| 1 | Backend Foundation | ✅ `v0.1-foundation` |
+| 2 | Subtitle Generation | ✅ `phase2-subtitles-working` |
+| 3 | Subtitle Burn-In | ✅ `phase3-subtitle-burn` |
+| 4 | Karaoke Generation | ✅ `phase4-karaoke-generation` (`47be178`) |
+| 5 | Source Separation / Vocal Removal | ✅ implemented — staged on `feature/source-separation` |
+| 5 M4 | Karaoke stem-only modes + `separation_job_id` | ⏳ next recommended |
+| 6 | Audio Enhancement (DeepFilterNet) | ⏳ `audio_enhance_task` placeholder |
+| 7 | Text-to-Speech (Piper) | ⏳ planned |
+| 8 | Voice Replacement | ⏳ planned |
+| 9+ | Voice Cloning (OpenVoice) | ⏳ planned |
+| 10 | Flutter Frontend | ⏳ planned |
+| 11 | Production Hardening | ⏳ planned |
 
-Implemented in commit `2f9f643`, tag `phase3-subtitle-burn`.
-See sections 9 and 10b for full details.
+### Phase 5 Milestone 4 (next recommended)
 
-### Phase 4 — Karaoke Generation (next recommended task)
+- Implement `vocals_only` and `music_only` karaoke output modes
+- Allow karaoke jobs to reuse canonical stems via `separation_job_id`
+- See `docs/reports/PHASE5_MILESTONE3_KARAOKE_MODES.md` — "Not yet implemented"
 
-**What:** Produce karaoke-style videos where each word is highlighted in sync with speech.
+### Phase 6 — Audio Enhancement
 
-**Status:** `karaoke_task` stub exists in `media_tasks.py` (currently marks failed immediately).
-No new dependencies required — uses whisper.cpp word timestamps and FFmpeg ASS filter.
+Noise removal via DeepFilterNet. `audio_enhance_task` is registered in `_TASK_MAP`
+but marks jobs failed with "not yet implemented".
 
-**Implementation steps:**
-1. Add `word_timestamps: bool = False` param to `WhisperService.transcribe()` — pass `--word-timestamps` to whisper.cpp CLI when true
-2. Add `TranscriptResult.to_ass()` — generate Advanced SubStation Alpha format with per-word highlight style blocks
-3. Implement `karaoke_task` in `media_tasks.py`:
-   - Same pipeline as `generate_subtitles_task` but with word-timestamps enabled
-   - Generate `.ass` file instead of `.srt`
-   - Burn `.ass` into video via FFmpeg `subtitles=` filter (same path-escaping as Phase 3)
-4. Add `GET /jobs/{id}/download/ass` endpoint
-5. Re-use `GET /jobs/{id}/download/video` pattern for the output MP4
+### Phase 7+ — TTS, Voice Replacement, Voice Cloning
 
-**See section 18 ("How to Start Phase 4") for full architectural details.**
-
-### Phase 5 — Audio Enhancement
-
-Noise removal and audio clarity improvement via DeepFilterNet.
-Requires `pip install deepfilternet` + PyTorch CPU.
-`audio_enhance_task` stub exists.
-
-### Phase 6 — Vocal Removal
-
-Separate vocals from music using Demucs (music source separation).
-Requires `pip install demucs` + PyTorch.
-`karaoke_task` stub exists — rename to `vocal_removal_task` or add a separate task.
-
-### Phase 7 — Text-to-Speech (Piper)
-
-Local TTS via Piper TTS. No source media needed — `media_id` may be nullable or point to a reference audio file.
-
-### Phase 8 — Voice Replacement
-
-Combines Phase 2 (transcript) + Phase 7 (TTS) + FFmpeg (audio track replacement).
-Transcribe → generate new speech → replace audio stream in original video.
-
-### Phase 9+ — Voice Cloning (OpenVoice)
-
-Clone a speaker's voice from a reference clip. GPU strongly recommended.
-`voice_clone_task` stub exists.
-
-### Phase 10 — Flutter Frontend
-
-Mobile + desktop UI. All Phase 1–9 APIs must be stable first.
-
-### Phase 11 — Production Hardening
-
-PostgreSQL + Alembic migrations, authentication, Docker Compose, GPU support, monitoring.
+See original phase descriptions in prior roadmap sections; APIs for
+`voice_replacement` and `voice_clone` return HTTP 422 until tasks are added to `_TASK_MAP`.
 
 ---
 
@@ -927,32 +951,25 @@ PostgreSQL + Alembic migrations, authentication, Docker Compose, GPU support, mo
 ## 15. Git Reference
 
 ```bash
-# Current state
+# Current state (2026-06-18)
 git log --oneline -5
-# 2f9f643 Phase 3: subtitle burn-in complete   ← HEAD
+# (Phase 5 staged — not yet committed)
+# 47be178 Phase 4: karaoke generation complete   ← HEAD, phase4-karaoke-generation
+# cd7133b Phase 3: subtitle burn-in complete
+# 2f9f643 Phase 3: subtitle burn-in complete
 # 19f8cc8 Finalize Phase 2 documentation and handoff
 # 94f77e0 Phase 2 subtitle generation complete
-# 52c5d3e Phase 1 foundation validated
 
 git tag
-# phase3-subtitle-burn      ← Phase 3 complete (current HEAD)
-# phase2-subtitles-working  ← Phase 2 complete
-# v0.1-foundation           ← Phase 1 complete
+# phase4-karaoke-generation   ← Phase 4 complete (current HEAD)
+# phase3-subtitle-burn
+# phase2-subtitles-working
+# v0.1-foundation
 
-# Safe rollback points
-git checkout v0.1-foundation           # Phase 1 only — no subtitle pipeline
-git checkout phase2-subtitles-working  # Phase 2 complete — subtitles working
-git checkout phase3-subtitle-burn      # Phase 3 complete — burn-in working (current)
-
-# To commit Phase 4 work
+# Suggested Phase 5 commit + tag
 git add .
-git commit -m "Phase 4: karaoke generation
-
-- Word-level timestamps via whisper.cpp --word-timestamps
-- TranscriptResult.to_ass() for ASS subtitle format
-- karaoke_task with word-highlight burn-in
-- GET /jobs/{id}/download/ass endpoint"
-git tag -a phase4-karaoke -m "Phase 4: karaoke generation"
+git commit -m "Phase 5: source separation, karaoke modes, and ML worker deps"
+git tag -a phase5-source-separation -m "Phase 5: vocal separation + karaoke modes"
 ```
 
 ---
@@ -968,17 +985,24 @@ git tag -a phase4-karaoke -m "Phase 4: karaoke generation"
 | `app/database/session.py` | `get_db_context()` — async context manager for Celery tasks |
 | `app/services/job_service.py` | `get_by_id_with_media()` — always use in Celery tasks |
 | `app/services/whisper_service.py` | `_build_subprocess_env()` — sets `LD_LIBRARY_PATH` |
-| `app/services/ffmpeg_service.py` | `_escape_filter_path()`, `extract_audio()`, `burn_subtitles()`, `probe()` |
-| `app/services/redis_service.py` | Module-level singleton; connect via `worker_process_init` |
-| `app/tasks/celery_app.py` | `worker_process_init` hook — connects Redis in each worker |
-| `app/tasks/media_tasks.py` | All task implementations; Phases 1–3 complete, Phases 4+ stubbed |
-| `app/api/v1/endpoints/jobs.py` | All job endpoints including `download/video` (Phase 3) |
+| `app/services/ffmpeg_service.py` | `_escape_filter_path()`, `extract_audio()`, `burn_subtitles()`, `burn_ass()`, `extract_stereo_wav()` |
+| `app/services/source_separation_service.py` | Demucs subprocess; stderr in failure messages |
+| `app/services/whisper_models.py` | Per-job whisper model resolution |
+| `app/services/separation_models.py` | `htdemucs` whitelist |
+| `app/services/karaoke_modes.py` | Karaoke `output_mode` validation |
+| `app/models/stem_metadata.py` | `canonical` vs `inline` stem ownership |
+| `app/services/redis_service.py` | Module-level singleton; connect via `worker_process_init` on persistent loop |
+| `app/tasks/async_runner.py` | `get_worker_event_loop()`, `run_async()` — required for all Celery async work |
+| `app/tasks/celery_app.py` | `worker_process_init` — connects Redis on worker loop |
+| `app/tasks/media_tasks.py` | All task implementations; Phases 1–5 complete; M4 pending |
+| `app/api/v1/endpoints/jobs.py` | Job endpoints + `/download/vocals`, `/download/instrumental` |
+| `requirements-ml.txt` | Pinned torch/torchaudio/demucs for worker |
 
 ---
 
 ## 17. Phase 2 Validation Evidence
 
-The subtitle pipeline was validated end-to-end on 2026-06-14.  
+The subtitle pipeline was validated end-to-end on 2026-06-14.
 Tag: `phase2-subtitles-working` · Commit: `94f77e0`
 
 ### Successful run identifiers
@@ -1061,7 +1085,7 @@ for any whisper.cpp build tree location.
 
 ## 18. Phase 3 Validation Evidence
 
-The subtitle burn-in pipeline was validated end-to-end on 2026-06-14.  
+The subtitle burn-in pipeline was validated end-to-end on 2026-06-14.
 Tag: `phase3-subtitle-burn` · Commit: `2f9f643`
 
 ### Run identifiers
@@ -1197,7 +1221,7 @@ highlight_color = &H0000FFFF&   (yellow)
 base_color      = &H00FFFFFF&   (white)
 ```
 
-**Pre-roll empty `\kf` tag:**  
+**Pre-roll empty `\kf` tag:**
 When the first word starts later than `seg.start`, a silent `{\kfN}` tag is
 emitted with no text after it, before the first word's `{\kfM}tag`.
 Consecutive `\kf` tags with empty text between them are valid ASS; per the
@@ -1282,4 +1306,4 @@ git tag -a phase4-karaoke -m "Phase 4: karaoke generation complete"
 
 ---
 
-*Last updated: 2026-06-15 by Cursor AI agent — Phase 4 complete; pre-commit engineering review.*
+*Last updated: 2026-06-18 — Phase 5 complete (pre-commit on `feature/source-separation`).*

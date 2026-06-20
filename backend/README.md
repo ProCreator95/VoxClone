@@ -15,11 +15,25 @@ Offline AI-powered media processing platform — FastAPI backend.
 
 | Pipeline | Status |
 |---|---|
-| Upload Video → Extract Audio → Generate Subtitles → Burn Subtitles → Download | 🏗 In Progress |
-| Voice Replacement | ⏳ Planned |
-| Karaoke (vocal removal) | ⏳ Planned |
-| Voice Cloning | ⏳ Planned |
-| Audio Enhancement | ⏳ Planned |
+| Subtitle generation (whisper.cpp) | ✅ |
+| Subtitle burn-in (FFmpeg) | ✅ |
+| Karaoke video (ASS word highlight) | ✅ |
+| Vocal separation (Demucs) | ✅ |
+| Karaoke over instrumental (inline Demucs) | ✅ |
+| Audio enhancement (DeepFilterNet) | ⏳ placeholder |
+| Voice replacement / cloning | ⏳ planned |
+
+See `docs/context/MASTER_PROJECT_HANDOFF.md` for full API and phase details.
+
+## ML dependencies (Celery worker)
+
+Source separation and inline karaoke Demucs require optional ML packages:
+
+```bash
+pip install -r requirements-ml.txt
+```
+
+Do not install unpinned `torch` — see `docs/reports/PHASE5_M2_DEMUCS_DEPENDENCY_ANALYSIS.md`.
 
 ## Project Structure
 
@@ -75,7 +89,8 @@ uvicorn app.main:app --reload --port 8000
 ### 5. Run the Celery worker (separate terminal)
 
 ```bash
-celery -A app.tasks.celery_app worker --loglevel=info --queues=media,ai,default
+pip install -r requirements-ml.txt   # first time — Demucs / separation jobs
+celery -A app.tasks.celery_app worker --loglevel=info --queues=media,ai --concurrency=1
 ```
 
 ### 6. (Optional) Celery Flower UI
@@ -125,12 +140,13 @@ Interactive docs available at **http://localhost:8000/docs** when running.
 | Type | Description |
 |---|---|
 | `audio_extraction` | Extract audio track from video |
-| `subtitle_generation` | Generate SRT subtitles via whisper.cpp |
+| `subtitle_generation` | Generate SRT/VTT/TXT via whisper.cpp |
 | `subtitle_burn` | Burn subtitles into video |
-| `karaoke` | Remove vocals via Demucs |
-| `voice_replacement` | Replace voice track |
-| `voice_clone` | Clone voice via OpenVoice |
-| `audio_enhance` | Denoise audio via DeepFilterNet |
+| `karaoke` | Karaoke video (`output_mode`: with_vocals or no_vocals) |
+| `vocal_separation` | Demucs two-stem separation (vocals + instrumental) |
+| `audio_enhance` | Dispatches but not implemented (marks failed) |
+| `voice_replacement` | HTTP 422 — not implemented |
+| `voice_clone` | HTTP 422 — not implemented |
 
 ## Database Migrations
 

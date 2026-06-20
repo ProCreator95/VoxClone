@@ -1,6 +1,6 @@
 # Phase 5 — Milestone 3: Karaoke Video Output Modes
 
-**Status:** Complete (awaiting review)
+**Status:** Complete (included in Phase 5 pre-commit)
 
 ## Implemented modes
 

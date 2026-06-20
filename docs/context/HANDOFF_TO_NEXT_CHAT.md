@@ -12,7 +12,7 @@
 > - API endpoint list is missing `GET /jobs/{id}/download/video` (added in Phase 3)
 > - Job payload shows `"model": "base"` — not a valid parameter for the whisper.cpp backend
 > - `.env` example shows `WHISPER_CPP_BINARY=whisper-cli` (PATH-based); actual value is the relative build path
-> - "Next Steps" section is now obsolete — Phase 4 (Karaoke) is the next step
+> - "Next Steps" section is obsolete — Phases 1–5 are implemented on `feature/source-separation`
 >
 > **Use instead:**
 > `docs/context/MASTER_PROJECT_HANDOFF.md` — single authoritative reference

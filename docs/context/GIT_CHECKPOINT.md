@@ -6,7 +6,7 @@
 >
 > **Reasons for deprecation:**
 > - Pre-commit checklist for a commit that was completed in `94f77e0`
-> - Branch referenced (`feature/subtitle-pipeline`) is not the active branch (`feature/subtitle-burn`)
+> - Branch referenced is not the active branch (`feature/source-separation`)
 > - References `WHISPER_BACKEND: openai` and `openai-whisper` — the final implementation uses whisper.cpp exclusively
 > - Config schema (`WHISPER_MODEL`, `WHISPER_MODELS_DIR`) does not match the actual `config.py`
 > - Checklist item "openai-whisper is importable" is invalid — openai-whisper is not used

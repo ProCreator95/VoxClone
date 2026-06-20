@@ -8,7 +8,7 @@
 > - All bugs described in this document have been fixed in commit `94f77e0`
 > - Bug 1 (Redis not connected in workers): fixed via `worker_process_init` in `celery_app.py`
 > - Bug 2 (SQLAlchemy MissingGreenlet): fixed via `get_by_id_with_media()` in `job_service.py`
-> - Branch referenced (`feature/subtitle-pipeline`) is not the active branch
+> - Branch referenced is not the active branch (`feature/source-separation`)
 > - Describes the task code structure in its pre-fix state; current code is significantly different
 > - "Validation After Fix" section's expected log sequence is now the normal baseline
 >
