@@ -1,6 +1,6 @@
 # Phase 5 — Milestone 2: Vocal Separation Job
 
-**Status:** Complete (included in Phase 5 pre-commit)
+**Status:** Complete (committed in Phase 5; tagged `phase5-source-separation` @ `c0f67c5`)
 
 ---
 

@@ -1,8 +1,8 @@
 # Phase 5 — Milestone 4: Stem Reuse and Additional Output Modes
 
-**Status:** Complete (2026-06-20)
+**Status:** Complete (committed @ `ddb2366`; tagged `phase5-complete`, `phase5-final`)
 
-**Branch:** `feature/source-separation`
+**Branch:** `feature/source-separation` (pushed)
 
 ---
 

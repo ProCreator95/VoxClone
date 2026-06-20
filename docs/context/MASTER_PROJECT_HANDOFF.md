@@ -1,10 +1,10 @@
 # VoxClone — Master Project Handoff
 
-**Date:** 2026-06-20
-**Branch:** `feature/source-separation`
-**Commit:** `47be178 Phase 4: karaoke generation complete` (Phase 5 staged, pre-commit)
-**Tags:** `v0.1-foundation` · `phase2-subtitles-working` · `phase3-subtitle-burn` · `phase4-karaoke-generation`
-**Working tree:** Phase 5 source separation + karaoke modes staged, awaiting commit
+**Date:** 2026-06-18
+**Branch:** `feature/source-separation` (pushed to `origin/feature/source-separation`)
+**Commit:** `ddb2366 Phase 5 Milestone 4: stem reuse and reusable karaoke outputs`
+**Tags:** `v0.1-foundation` · `phase2-subtitles-working` · `phase3-subtitle-burn` · `phase4-karaoke-generation` · `phase5-source-separation` · `phase5-complete` · `phase5-final`
+**Working tree:** clean — Phase 5 committed, tagged, and pushed
 
 > This document is completely self-contained. A new developer can continue
 > the project using only this file.
@@ -476,7 +476,9 @@ POST /api/v1/jobs
 **Known limitation — Whisper model accuracy on music content:**
 The `ggml-tiny.en.bin` model drops lyrics during long instrumental sections (~27s and ~30s gaps observed in validation). This is a Whisper model limitation, not a code defect — the same gaps appear identically in `subtitle_generation` output (using `--output-json`) and `karaoke` output (using `--output-json-full`). See section 19 and `KNOWN_BUGS_AND_ROOT_CAUSES.md` for details. Use `ggml-base.en.bin` for better accuracy on music videos.
 
-### Phase 5 — Source Separation & Vocal Removal ✅ COMPLETE (pre-commit)
+### Phase 5 — Source Separation & Vocal Removal ✅ COMPLETE
+
+Tagged `phase5-final` at `ddb2366` (also `phase5-complete`); `phase5-source-separation` at `c0f67c5` marks M1–M3 baseline.
 
 **Milestone 1 — Per-job Whisper models:** `whisper_models.py`; defaults `subtitle_generation` → `tiny`, `karaoke` → `base`.
 
@@ -906,7 +908,7 @@ ffprobe "processed/${BURN_JOB_ID}_subtitled.mp4" 2>&1 | grep -E "Duration|Video:
 | 2 | Subtitle Generation | ✅ `phase2-subtitles-working` |
 | 3 | Subtitle Burn-In | ✅ `phase3-subtitle-burn` |
 | 4 | Karaoke Generation | ✅ `phase4-karaoke-generation` (`47be178`) |
-| 5 | Source Separation / Vocal Removal | ✅ complete — staged on `feature/source-separation` |
+| 5 | Source Separation / Vocal Removal | ✅ `phase5-final` (`ddb2366`) on `feature/source-separation` |
 | 6 | Audio Enhancement (DeepFilterNet) | ⏳ `audio_enhance_task` placeholder |
 | 7 | Text-to-Speech (Piper) | ⏳ planned |
 | 8 | Voice Replacement | ⏳ planned |
@@ -948,23 +950,20 @@ See original phase descriptions in prior roadmap sections; APIs for
 ```bash
 # Current state (2026-06-18)
 git log --oneline -5
-# (Phase 5 staged — not yet committed)
-# 47be178 Phase 4: karaoke generation complete   ← HEAD, phase4-karaoke-generation
+# ddb2366 Phase 5 Milestone 4: stem reuse and reusable karaoke outputs   ← HEAD, phase5-complete, phase5-final
+# fe6b264 Docs: align project documentation with Phase 5 state
+# c0f67c5 Phase 5: source separation, karaoke modes, and ML worker infrastructure   ← phase5-source-separation
+# 47be178 Phase 4: karaoke generation complete   ← phase4-karaoke-generation
 # cd7133b Phase 3: subtitle burn-in complete
-# 2f9f643 Phase 3: subtitle burn-in complete
-# 19f8cc8 Finalize Phase 2 documentation and handoff
-# 94f77e0 Phase 2 subtitle generation complete
 
-git tag
-# phase4-karaoke-generation   ← Phase 4 complete (current HEAD)
-# phase3-subtitle-burn
-# phase2-subtitles-working
-# v0.1-foundation
-
-# Suggested Phase 5 commit + tag
-git add .
-git commit -m "Phase 5: source separation, karaoke modes, and ML worker deps"
-git tag -a phase5-source-separation -m "Phase 5: vocal separation + karaoke modes"
+git tag -l 'phase*' 'v0.1*'
+# phase5-final                 @ ddb2366
+# phase5-complete              @ ddb2366
+# phase5-source-separation     @ c0f67c5
+# phase4-karaoke-generation    @ 47be178
+# phase3-subtitle-burn         @ 2f9f643
+# phase2-subtitles-working     @ 94f77e0
+# v0.1-foundation              @ 52c5d3e
 ```
 
 ---
@@ -1301,4 +1300,4 @@ git tag -a phase4-karaoke -m "Phase 4: karaoke generation complete"
 
 ---
 
-*Last updated: 2026-06-18 — Phase 5 complete (pre-commit on `feature/source-separation`).*
+*Last updated: 2026-06-18 — Phase 5 complete, committed, tagged (`phase5-final` @ `ddb2366`), pushed on `feature/source-separation`.*

@@ -4,9 +4,9 @@
 
 ---
 
-## Current State (as of 2026-06-20)
+## Current State (as of 2026-06-18)
 
-**Phases 1–5 are complete.** Phase 5 Milestone 4 (stem reuse + stem-only modes) is implemented on `feature/source-separation` and pending commit.
+**Phases 1–5 are complete, committed, tagged, and pushed.**
 
 ```
 Phase 1: Upload → ffprobe → Media + Job persistence → Redis progress
@@ -16,17 +16,16 @@ Phase 4: karaoke → word-level ASS → karaoke MP4 (with_vocals mode)
 Phase 5: vocal_separation + all karaoke modes + separation_job_id reuse
 ```
 
-**Git state:** `feature/source-separation` · HEAD `47be178` (Phase 4) · Phase 5 M1–M4 changes staged · tag `phase4-karaoke-generation`
+**Git state:** `feature/source-separation` · HEAD `ddb2366` · tags `phase5-source-separation` (`c0f67c5`), `phase5-complete` / `phase5-final` (`ddb2366`) · pushed to `origin`
 
 ---
 
 ## What to Do Next
 
-### Immediate (before new features)
+### Before starting Phase 6
 
-1. **Commit Phase 5** on `feature/source-separation` with pinned ML deps and docs.
-2. **Tag** `phase5-source-separation` at that commit.
-3. **Restart Celery workers** after deploy — `async_runner` loop is created at process start.
+1. **Restart Celery workers** if code changed since last deploy — `async_runner` loop is created at process start.
+2. **Install ML deps** on worker hosts if not already: `pip install -r requirements-ml.txt`
 
 ### Recommended next development work
 
@@ -111,5 +110,6 @@ docs/context/MASTER_PROJECT_HANDOFF.md    ← authoritative reference (all phase
 docs/context/CURRENT_PROJECT_STATE.md     ← component status + validation evidence
 docs/context/KNOWN_BUGS_AND_ROOT_CAUSES.md
 docs/reports/PHASE5_*.md                  ← Phase 5 milestone reports
+docs/reports/PHASE5_DOCUMENTATION_SYNC.md ← Phase 5 doc/git alignment (pre–Phase 6)
 docs/reports/PHASE5_M2_DEMUCS_DEPENDENCY_ANALYSIS.md
 ```

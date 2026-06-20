@@ -1,5 +1,8 @@
 # Phase 5 — Documentation Audit
 
+> **Superseded for git/state accuracy** by `PHASE5_DOCUMENTATION_SYNC.md` (2026-06-18).
+> This file remains as a historical record of the pre-commit documentation pass.
+
 **Date:** 2026-06-18
 **Auditor:** Documentation maintainer pass (pre-commit on `feature/source-separation`)
 

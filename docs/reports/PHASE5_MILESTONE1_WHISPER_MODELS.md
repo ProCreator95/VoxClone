@@ -1,6 +1,6 @@
 # Phase 5 — Milestone 1: Per-Job Whisper Model Selection
 
-**Status:** Complete (included in Phase 5 pre-commit)
+**Status:** Complete (committed in Phase 5; tagged `phase5-source-separation` @ `c0f67c5`)
 **Scope:** `whisper_model` parameter for `subtitle_generation` and `karaoke` only. No Demucs.
 
 ---

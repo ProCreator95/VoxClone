@@ -1,9 +1,9 @@
 # VoxClone — Current Project State
 
-**Date:** 2026-06-20
-**Branch:** `feature/source-separation`
-**Last commit:** `47be178 Phase 4: karaoke generation complete` (Phase 5 staged, pre-commit)
-**Tags:** `v0.1-foundation` · `phase2-subtitles-working` · `phase3-subtitle-burn` · `phase4-karaoke-generation`
+**Date:** 2026-06-18
+**Branch:** `feature/source-separation` (pushed to `origin/feature/source-separation`)
+**Last commit:** `ddb2366 Phase 5 Milestone 4: stem reuse and reusable karaoke outputs`
+**Tags:** `v0.1-foundation` · `phase2-subtitles-working` · `phase3-subtitle-burn` · `phase4-karaoke-generation` · `phase5-source-separation` · `phase5-complete` · `phase5-final`
 
 ---
 
@@ -145,6 +145,8 @@ pip install -r requirements-ml.txt
 
 See `docs/reports/PHASE5_MILESTONE2_VOCAL_SEPARATION.md` for self-test commands.
 
+Tag: `phase5-final` · Commit: `ddb2366` (also `phase5-complete` at same commit; `phase5-source-separation` at `c0f67c5` for M1–M3 baseline)
+
 **Celery note:** Use `--concurrency=1` on hosts running Demucs when OOM is observed (`PHASE5_STEM_OWNERSHIP_AND_OPS.md`).
 
 ### Placeholder / Not Implemented
@@ -207,26 +209,31 @@ Report: `docs/reports/PHASE5_MILESTONE4_STEM_REUSE.md`
 
 ## Git State
 
-**Branch:** `feature/source-separation`
-**Working tree:** Phase 5 implementation staged (not yet committed)
-**Pending tag:** `phase5-source-separation` (recommended at commit time)
+**Branch:** `feature/source-separation` — synced with `origin/feature/source-separation`
+**Working tree:** clean (Phase 5 committed and tagged)
 
 ### Commit log
 
 ```
-47be178  Phase 4: karaoke generation complete     ← HEAD, phase4-karaoke-generation
+ddb2366  Phase 5 Milestone 4: stem reuse and reusable karaoke outputs   ← HEAD, phase5-complete, phase5-final
+fe6b264  Docs: align project documentation with Phase 5 state
+c0f67c5  Phase 5: source separation, karaoke modes, and ML worker infrastructure   ← phase5-source-separation
+47be178  Phase 4: karaoke generation complete   ← phase4-karaoke-generation
 cd7133b  Phase 3: subtitle burn-in complete
 2f9f643  Phase 3: subtitle burn-in complete
 19f8cc8  Finalize Phase 2 documentation and handoff
 94f77e0  Phase 2 subtitle generation complete
-52c5d3e  Phase 1 foundation validated
+52c5d3e  Phase 1 foundation validated   ← v0.1-foundation
 ```
 
 ### Tags
 
 ```
-v0.1-foundation
-phase2-subtitles-working
-phase3-subtitle-burn
-phase4-karaoke-generation
+v0.1-foundation              @ 52c5d3e
+phase2-subtitles-working     @ 94f77e0
+phase3-subtitle-burn         @ 2f9f643
+phase4-karaoke-generation    @ 47be178
+phase5-source-separation     @ c0f67c5   (M1–M3 + ML infrastructure)
+phase5-complete              @ ddb2366   (full Phase 5 including M4)
+phase5-final                 @ ddb2366   (validated Phase 5 complete)
 ```

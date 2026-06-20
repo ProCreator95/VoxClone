@@ -371,7 +371,7 @@ def run_async(coro):
 
 ## No Known Open Bugs
 
-As of Phase 5 (pre-commit on `feature/source-separation`), no unresolved bugs are known.
+As of Phase 5 (`phase5-final` @ `ddb2366` on `feature/source-separation`), no unresolved bugs are known.
 
 ---
 
