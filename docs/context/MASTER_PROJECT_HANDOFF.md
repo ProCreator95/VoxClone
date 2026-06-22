@@ -1,10 +1,10 @@
 # VoxClone — Master Project Handoff
 
-**Date:** 2026-06-18
-**Branch:** `feature/source-separation` (pushed to `origin/feature/source-separation`)
-**Commit:** `ddb2366 Phase 5 Milestone 4: stem reuse and reusable karaoke outputs`
+**Date:** 2026-06-20
+**Branch:** `feature/audio-enhancement` (Phase 6 development; Phase 5 baseline on `feature/source-separation`)
+**Commit:** `ddb2366 Phase 5 Milestone 4: stem reuse and reusable karaoke outputs` (Phase 5 production baseline)
 **Tags:** `v0.1-foundation` · `phase2-subtitles-working` · `phase3-subtitle-burn` · `phase4-karaoke-generation` · `phase5-source-separation` · `phase5-complete` · `phase5-final`
-**Working tree:** clean — Phase 5 committed, tagged, and pushed
+**Phase 6:** Milestone 2 complete — `audio_enhance` pipeline implemented (`deep-filter` CLI subprocess)
 
 > This document is completely self-contained. A new developer can continue
 > the project using only this file.
@@ -66,18 +66,22 @@ All AI models run locally — no cloud API keys, no GPU required for Phase 2.
 │  queue: ai     →  generate_subtitles_task                │
 │                →  karaoke_task                           │
 │                →  vocal_separation_task                  │
-│                →  audio_enhance_task (placeholder)       │
+│                →  audio_enhance_task                   │
 │                     │                                    │
 │              ┌──────▼──────────────────┐                │
 │              │   FFmpegService          │                │
 │              └──────┬──────────────────┘                │
 │              ┌──────▼──────────────────┐                │
 │              │   WhisperService         │                │
-│              │   (whisper.cpp)          │                │
+│              │   (whisper.cpp subprocess)│                │
 │              └──────┬──────────────────┘                │
 │              ┌──────▼──────────────────┐                │
 │              │ SourceSeparationService  │                │
 │              │ (Demucs subprocess)      │                │
+│              └──────┬──────────────────┘                │
+│              ┌──────▼──────────────────┐                │
+│              │ AudioEnhancementService  │                │
+│              │ (deep-filter subprocess) │                │
 │              └──────┬──────────────────┘                │
 │                     ↓                                    │
 │         outputs written to processed/                    │
@@ -116,6 +120,7 @@ POST /jobs {job_type: "subtitle_generation", media_id: X}
 | Progress cache | Redis | same instance |
 | Speech recognition | whisper.cpp (CLI binary) | built from source |
 | Source separation | Demucs 4.0.1 + PyTorch 2.8.0 CPU | worker-only; see `requirements-ml.txt` |
+| Audio enhancement | DeepFilterNet `deep-filter` CLI 0.5.6 | subprocess only — **not** in `requirements-ml.txt` |
 | Media processing | FFmpeg | 6.1.1 (system) |
 | Logging | structlog | JSON format |
 | Settings | pydantic-settings | .env file |
@@ -305,6 +310,7 @@ Base URL: `http://localhost:8000/api/v1`
 | GET | `/jobs/{id}/download/karaoke-video` | Download karaoke MP4 (karaoke jobs) |
 | GET | `/jobs/{id}/download/vocals` | Download vocals stem WAV (vocal_separation / inline karaoke) |
 | GET | `/jobs/{id}/download/instrumental` | Download instrumental stem WAV |
+| GET | `/jobs/{id}/download/enhanced` | Download enhanced audio WAV (audio_enhance jobs) |
 | DELETE | `/jobs/{id}` | Cancel an active job |
 
 ### Job creation payload
@@ -329,7 +335,7 @@ POST /api/v1/jobs
 | `subtitle_burn` | 3 | ✅ implemented |
 | `karaoke` | 4–5 | ✅ implemented (modes: `karaoke_video_with_vocals`, `karaoke_video_no_vocals`) |
 | `vocal_separation` | 5 | ✅ implemented |
-| `audio_enhance` | 6 | ⏳ dispatches but marks failed — DeepFilterNet not implemented |
+| `audio_enhance` | 6 | ✅ implemented — `deep-filter` CLI subprocess |
 | `voice_replacement` | 8 | ⏳ HTTP 422 — not in `_TASK_MAP` |
 | `voice_clone` | 9+ | ⏳ HTTP 422 — not in `_TASK_MAP` |
 
@@ -909,19 +915,97 @@ ffprobe "processed/${BURN_JOB_ID}_subtitled.mp4" 2>&1 | grep -E "Duration|Video:
 | 3 | Subtitle Burn-In | ✅ `phase3-subtitle-burn` |
 | 4 | Karaoke Generation | ✅ `phase4-karaoke-generation` (`47be178`) |
 | 5 | Source Separation / Vocal Removal | ✅ `phase5-final` (`ddb2366`) on `feature/source-separation` |
-| 6 | Audio Enhancement (DeepFilterNet) | ⏳ `audio_enhance_task` placeholder |
+| 6 | Audio Enhancement (DeepFilterNet) | ✅ M2 complete — `audio_enhance_task` + `/download/enhanced` |
 | 7 | Text-to-Speech (Piper) | ⏳ planned |
 | 8 | Voice Replacement | ⏳ planned |
 | 9+ | Voice Cloning (OpenVoice) | ⏳ planned |
 | 10 | Flutter Frontend | ⏳ planned |
 | 11 | Production Hardening | ⏳ planned |
 
-### Phase 6 — Audio Enhancement
+### Phase 6 — Audio Enhancement ✅ M2 COMPLETE
 
-Noise removal via DeepFilterNet. `audio_enhance_task` is registered in `_TASK_MAP`
-but marks jobs failed with "not yet implemented".
+Noise removal via DeepFilterNet **`deep-filter` CLI subprocess** (not Python package).
 
-Phase 5 M4 report: `docs/reports/PHASE5_MILESTONE4_STEM_REUSE.md`
+**Milestone 1:** feasibility, dependency validation, PoC, architecture design.
+**Milestone 2:** `AudioEnhancementService`, `audio_enhance_task`, FFmpeg 48 kHz prep,
+`GET /jobs/{id}/download/enhanced`.
+
+Pipeline: source media → FFmpeg 48 kHz mono WAV → `deep-filter` →
+`processed/<job_id>_enhanced.wav`
+
+Reports: `docs/reports/PHASE6_M1_DEEPFILTERNET_ANALYSIS.md`,
+`docs/reports/PHASE6_M1_VERIFICATION_AUDIT.md`,
+`docs/reports/PHASE6_DEPENDENCY_PROTECTION_RULES.md`,
+`docs/reports/PHASE6_M2_AUDIO_ENHANCEMENT_IMPLEMENTATION.md`
+
+PoC: `backend/tools/experiments/deepfilternet_poc.py`
+
+### DeepFilterNet Integration Rules
+
+Project policy for Phase 6. Full rationale:
+`docs/reports/PHASE6_DEPENDENCY_PROTECTION_RULES.md`
+
+#### Dependency Protection
+
+The validated Phase 5 ML stack is production baseline and must be preserved:
+
+```text
+torch==2.8.0+cpu
+torchaudio==2.8.0+cpu
+demucs==4.0.1
+numpy==2.4.6
+packaging==26.2
+```
+
+Do not upgrade, downgrade, or replace these packages as part of Phase 6.
+
+#### DeepFilterNet Installation Policy
+
+DeepFilterNet integration **SHALL** use the `deep-filter` CLI binary.
+
+The Python package:
+
+```bash
+pip install deepfilternet
+```
+
+shall **NOT** be added to:
+
+- `requirements.txt`
+- `requirements-ml.txt`
+
+unless a future compatibility investigation and full regression validation are completed.
+
+#### Reason
+
+DeepFilterNet 0.5.6 currently has:
+
+- no official Python 3.12 wheel for `deepfilterlib`
+- `numpy` `< 2.0` requirement
+- `packaging` `< 24` requirement
+
+These conflict with the validated VoxClone worker environment.
+
+#### Approved Architecture
+
+| System | Integration |
+|--------|-------------|
+| Whisper | whisper.cpp subprocess |
+| Demucs | `python -m demucs` subprocess |
+| DeepFilterNet | `deep-filter` subprocess |
+
+All ML systems remain isolated from each other. No shared Python dependency
+integration is permitted for DeepFilterNet in Phase 6.
+
+#### Future Exception Process
+
+Any future proposal to use the Python DeepFilterNet package must include:
+
+1. Full dependency analysis
+2. Demucs regression validation
+3. Torch compatibility validation
+4. Python 3.12 compatibility validation
+5. Explicit approval in a milestone report
 
 ### Phase 7+ — TTS, Voice Replacement, Voice Cloning
 
@@ -981,6 +1065,7 @@ git tag -l 'phase*' 'v0.1*'
 | `app/services/whisper_service.py` | `_build_subprocess_env()` — sets `LD_LIBRARY_PATH` |
 | `app/services/ffmpeg_service.py` | `_escape_filter_path()`, `extract_audio()`, `burn_subtitles()`, `burn_ass()`, `extract_stereo_wav()` |
 | `app/services/source_separation_service.py` | Demucs subprocess; stderr in failure messages |
+| `app/services/audio_enhancement_service.py` | deep-filter subprocess; stderr in failure messages |
 | `app/services/whisper_models.py` | Per-job whisper model resolution |
 | `app/services/separation_models.py` | `htdemucs` whitelist |
 | `app/services/karaoke_modes.py` | Karaoke `output_mode` validation |
@@ -989,7 +1074,7 @@ git tag -l 'phase*' 'v0.1*'
 | `app/tasks/async_runner.py` | `get_worker_event_loop()`, `run_async()` — required for all Celery async work |
 | `app/tasks/celery_app.py` | `worker_process_init` — connects Redis on worker loop |
 | `app/tasks/media_tasks.py` | All task implementations; Phases 1–5 complete; M4 pending |
-| `app/api/v1/endpoints/jobs.py` | Job endpoints + `/download/vocals`, `/download/instrumental` |
+| `app/api/v1/endpoints/jobs.py` | Job endpoints + stem/enhanced download routes |
 | `requirements-ml.txt` | Pinned torch/torchaudio/demucs for worker |
 
 ---
@@ -1300,4 +1385,4 @@ git tag -a phase4-karaoke -m "Phase 4: karaoke generation complete"
 
 ---
 
-*Last updated: 2026-06-18 — Phase 5 complete, committed, tagged (`phase5-final` @ `ddb2366`), pushed on `feature/source-separation`.*
+*Last updated: 2026-06-20 — Phase 5 baseline (`phase5-final`); Phase 6 M2 complete on `feature/audio-enhancement`.*

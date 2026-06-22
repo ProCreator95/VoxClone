@@ -33,6 +33,10 @@ from app.services.source_separation_service import (
     SourceSeparationError,
     SourceSeparationService,
 )
+from app.services.audio_enhancement_service import (
+    AudioEnhancementError,
+    AudioEnhancementService,
+)
 from app.services.whisper_models import WHISPER_MODEL_DEFAULTS, resolve_whisper_model
 from app.services.whisper_service import WhisperService
 from app.models.stem_metadata import (
@@ -1279,27 +1283,160 @@ def vocal_separation_task(self: Task, job_id: str) -> dict:
     return run_async(_run())
 
 
-# ── Task: Audio Enhancement (placeholder) ─────────────────────────────────────
+# ── Task: Audio Enhancement ───────────────────────────────────────────────────
 
 @celery_app.task(
     bind=True,
     base=VoxCloneTask,
     name="app.tasks.media_tasks.audio_enhance_task",
+    max_retries=1,
 )
 def audio_enhance_task(self: Task, job_id: str) -> dict:
-    """Enhance audio via DeepFilterNet (placeholder — implementation TBD)."""
+    """
+    Enhance speech audio via DeepFilterNet (``deep-filter`` CLI subprocess).
+
+    Pipeline:
+        1. Load job + media from DB.
+        2. FFmpeg → 48 kHz mono PCM WAV (``enhancement_input``).
+        3. ``deep-filter`` subprocess → enhanced WAV.
+        4. Persist ``result_files.enhanced_audio`` and ``intermediate_files``.
+
+    Output:
+        processed/<job_id>_enhanced.wav
+    """
 
     async def _run() -> dict:
-        setup_logging()
-        async with get_db_context() as db:
-            await JobService(db).mark_started(job_id, self.request.id)
-
-        async with get_db_context() as db:
-            await JobService(db).mark_failed(
-                job_id,
-                "Audio enhancement pipeline not yet implemented. Coming soon.",
+        try:
+            logger.info(
+                "diag_audio_enhance_start",
+                job_id=job_id,
+                celery_request_id=self.request.id,
             )
-        return {"job_id": job_id, "status": "not_implemented"}
+            setup_logging()
+
+            ffmpeg = FFmpegService()
+            enhancement = AudioEnhancementService()
+
+            try:
+                await enhancement.validate()
+            except AudioEnhancementError as exc:
+                logger.exception("diag_audio_enhance_validate_failed", job_id=job_id)
+                async with get_db_context() as db:
+                    await JobService(db).mark_failed(job_id, str(exc))
+                raise
+
+            async with get_db_context() as db:
+                job = await JobService(db).mark_started(job_id, self.request.id)
+                media = job.media
+                params: dict = dict(job.parameters or {})
+
+            await _update_progress(job_id, 10, "Loading job")
+
+            try:
+                logger.info(
+                    "diag_audio_enhance_prepare_audio",
+                    job_id=job_id,
+                    media_id=media.id,
+                    media_type=media.media_type,
+                )
+
+                source_path = Path(media.file_path)
+                if not source_path.exists():
+                    raise FileNotFoundError(f"Source media not found: {source_path}")
+
+                if media.media_type not in (MediaType.VIDEO, MediaType.AUDIO):
+                    raise ValueError(
+                        f"audio_enhance requires video or audio media; "
+                        f"got '{media.media_type}'."
+                    )
+
+                await _update_progress(job_id, 20, "Preparing audio")
+
+                input_wav = resolve_output_path(
+                    settings.PROCESSED_DIR, job_id, "enhancement_input", "wav"
+                )
+                enhanced_wav = resolve_output_path(
+                    settings.PROCESSED_DIR, job_id, "enhanced", "wav"
+                )
+
+                await _update_progress(job_id, 40, "Running FFmpeg preprocessing")
+
+                await ffmpeg.extract_enhancement_wav(source_path, input_wav)
+
+                if not input_wav.exists() or input_wav.stat().st_size == 0:
+                    raise FileNotFoundError(
+                        f"FFmpeg preprocessing did not produce a valid WAV: {input_wav}"
+                    )
+
+                probe = await ffmpeg.probe(input_wav)
+
+                logger.info(
+                    "diag_audio_enhance_preprocess_complete",
+                    job_id=job_id,
+                    input_wav=str(input_wav),
+                    duration_seconds=probe.duration,
+                    sample_rate=settings.ENHANCEMENT_SAMPLE_RATE,
+                )
+
+                await _update_progress(job_id, 70, "Running DeepFilterNet")
+
+                await enhancement.enhance(input_wav, enhanced_wav)
+
+                await _update_progress(job_id, 90, "Validating output")
+
+                logger.info(
+                    "diag_audio_enhance_validate_output",
+                    job_id=job_id,
+                    enhanced_wav=str(enhanced_wav),
+                    enhanced_bytes=enhanced_wav.stat().st_size,
+                )
+
+                params["enhancement_backend"] = "deep-filter-cli"
+                params["input_sample_rate"] = settings.ENHANCEMENT_SAMPLE_RATE
+                params["input_channels"] = settings.ENHANCEMENT_CHANNELS
+                params["duration_seconds"] = probe.duration
+                params["intermediate_files"] = {
+                    "enhancement_input": str(input_wav),
+                }
+                params["result_files"] = {
+                    "enhanced_audio": str(enhanced_wav),
+                }
+
+                async with get_db_context() as db:
+                    job_svc = JobService(db)
+                    await job_svc.update(job_id, parameters=params)
+                    await job_svc.mark_completed(job_id, str(enhanced_wav))
+
+                logger.info(
+                    "diag_audio_enhance_completed",
+                    job_id=job_id,
+                    enhanced_audio=str(enhanced_wav),
+                )
+
+                return {
+                    "job_id": job_id,
+                    "result_path": str(enhanced_wav),
+                    "enhanced_audio": str(enhanced_wav),
+                }
+
+            except Exception as exc:
+                logger.exception(
+                    "diag_audio_enhance_failed",
+                    job_id=job_id,
+                    exc_type=type(exc).__name__,
+                    exc_message=str(exc),
+                )
+                async with get_db_context() as db:
+                    await JobService(db).mark_failed(job_id, str(exc))
+                raise
+
+        except Exception as top_exc:
+            logger.exception(
+                "diag_audio_enhance_task_unhandled",
+                job_id=job_id,
+                exc_type=type(top_exc).__name__,
+            )
+            raise
 
     return run_async(_run())
 

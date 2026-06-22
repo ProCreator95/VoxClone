@@ -64,6 +64,12 @@ class Settings(BaseSettings):
     SEPARATION_SAMPLE_RATE: int = 44100
     SEPARATION_CHANNELS: int = 2
 
+    # ── Audio enhancement (DeepFilterNet deep-filter CLI — Phase 6) ─────────
+    # Path to the deep-filter release binary; not a Python package dependency.
+    DEEPFILTER_BINARY: str = "deep-filter"
+    ENHANCEMENT_SAMPLE_RATE: int = 48000
+    ENHANCEMENT_CHANNELS: int = 1
+
     # ── CORS ──────────────────────────────────────────────────────────────────
     ALLOWED_ORIGINS: list[str] = ["*"]
 

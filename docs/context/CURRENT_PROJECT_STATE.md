@@ -1,8 +1,9 @@
 # VoxClone — Current Project State
 
-**Date:** 2026-06-18
-**Branch:** `feature/source-separation` (pushed to `origin/feature/source-separation`)
-**Last commit:** `ddb2366 Phase 5 Milestone 4: stem reuse and reusable karaoke outputs`
+**Date:** 2026-06-20
+**Branch:** `feature/audio-enhancement` (Phase 6 development)
+**Phase 5 baseline:** `feature/source-separation` · `ddb2366` · tags `phase5-final`
+**Last commit:** Phase 5 production baseline at `ddb2366`
 **Tags:** `v0.1-foundation` · `phase2-subtitles-working` · `phase3-subtitle-burn` · `phase4-karaoke-generation` · `phase5-source-separation` · `phase5-complete` · `phase5-final`
 
 ---
@@ -19,7 +20,8 @@
 | FFmpeg | 6.1.1 (system package, `/usr/bin/ffmpeg`) |
 | whisper-cli | `tools/whisper.cpp/build/bin/whisper-cli` |
 | Whisper models dir | `backend/models/` |
-| ML stack (worker) | `torch 2.8.0+cpu`, `torchaudio 2.8.0+cpu`, `demucs 4.0.1` — see `requirements-ml.txt` |
+| ML stack (worker) | `torch 2.8.0+cpu`, `torchaudio 2.8.0+cpu`, `demucs 4.0.1`, `numpy 2.4.6`, `packaging 26.2` — see `requirements-ml.txt` |
+| Audio enhancement (Phase 6) | `deep-filter` CLI 0.5.6 subprocess — **not** in Python requirements |
 
 ### Whisper Models Present
 
@@ -149,11 +151,74 @@ Tag: `phase5-final` · Commit: `ddb2366` (also `phase5-complete` at same commit;
 
 **Celery note:** Use `--concurrency=1` on hosts running Demucs when OOM is observed (`PHASE5_STEM_OWNERSHIP_AND_OPS.md`).
 
+### Phase 6 — Audio Enhancement ✅ M2 COMPLETE
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| M1 feasibility report | ✅ | `docs/reports/PHASE6_M1_DEEPFILTERNET_ANALYSIS.md` |
+| M1 verification audit | ✅ | `docs/reports/PHASE6_M1_VERIFICATION_AUDIT.md` |
+| Dependency protection rules | ✅ | `docs/reports/PHASE6_DEPENDENCY_PROTECTION_RULES.md` |
+| M2 implementation report | ✅ | `docs/reports/PHASE6_M2_AUDIO_ENHANCEMENT_IMPLEMENTATION.md` |
+| `AudioEnhancementService` | ✅ | `deep-filter` CLI subprocess |
+| `audio_enhance_task` | ✅ | FFmpeg 48 kHz prep → enhancement → persist metadata |
+| `GET /jobs/{id}/download/enhanced` | ✅ | Serves `enhanced_audio` from `result_files` |
+| PoC | ✅ | `backend/tools/experiments/deepfilternet_poc.py` |
+
+**Integration:** CLI subprocess only — `deepfilternet` **not** in requirements files.
+
+### DeepFilterNet Integration Rules
+
+Project policy for Phase 6. Do not modify the Phase 5 ML stack for DeepFilterNet integration.
+
+#### Dependency Protection
+
+The validated Phase 5 ML stack is production baseline and must be preserved:
+
+```text
+torch==2.8.0+cpu
+torchaudio==2.8.0+cpu
+demucs==4.0.1
+numpy==2.4.6
+packaging==26.2
+```
+
+Do not upgrade, downgrade, or replace these packages as part of Phase 6.
+
+#### DeepFilterNet Installation Policy
+
+DeepFilterNet integration **SHALL** use the `deep-filter` CLI binary.
+
+The Python package:
+
+```bash
+pip install deepfilternet
+```
+
+shall **NOT** be added to `requirements.txt` or `requirements-ml.txt` unless a future
+compatibility investigation and full regression validation are completed.
+
+#### Reason
+
+DeepFilterNet 0.5.6 currently has: no official Python 3.12 wheel for `deepfilterlib`;
+`numpy` `< 2.0` requirement; `packaging` `< 24` requirement — all conflict with the
+validated worker environment.
+
+#### Approved Architecture
+
+Whisper → whisper.cpp subprocess · Demucs → demucs subprocess · DeepFilterNet →
+`deep-filter` subprocess. All ML systems remain isolated. No shared Python dependency
+integration for DeepFilterNet in Phase 6.
+
+#### Future Exception Process
+
+Any Python-package proposal requires: dependency analysis, Demucs regression validation,
+torch compatibility validation, Python 3.12 validation, and explicit milestone approval.
+
 ### Placeholder / Not Implemented
 
 | job_type | API | Runtime |
 |----------|-----|---------|
-| `audio_enhance` | ✅ accepts job | ❌ marks failed — DeepFilterNet not implemented |
+| `audio_enhance` | ✅ accepts job | ✅ `deep-filter` CLI subprocess |
 | `voice_replacement` | ❌ HTTP 422 | — |
 | `voice_clone` | ❌ HTTP 422 | — |
 

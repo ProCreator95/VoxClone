@@ -88,7 +88,10 @@ router = APIRouter(prefix="/jobs", tags=["jobs"])
         "`karaoke_video_with_vocals` (default) | `karaoke_video_no_vocals` | "
         "`vocals_only` | `music_only`\n"
         "- Optional `parameters.separation_job_id` — reuse stems from a completed "
-        "`vocal_separation` job (skips Demucs)"
+        "`vocal_separation` job (skips Demucs)\n\n"
+        "**Audio enhancement** (`job_type`: `audio_enhance`):\n"
+        "- Produces `enhanced.wav` via DeepFilterNet (`deep-filter` CLI subprocess)\n"
+        "- Download: `GET /jobs/{id}/download/enhanced`"
     ),
 )
 async def create_job(
@@ -225,7 +228,8 @@ async def cancel_job(
 #   3. /download/karaoke-video   ← Phase 4: karaoke jobs (MP4)
 #   4. /download/vocals          ← Phase 5: vocal_separation jobs
 #   5. /download/instrumental    ← Phase 5: vocal_separation jobs
-#   6. /download/{format_type}   ← must remain LAST
+#   6. /download/enhanced        ← Phase 6: audio_enhance jobs
+#   7. /download/{format_type}   ← must remain LAST
 
 @router.get(
     "/{job_id}/download/video",
@@ -496,6 +500,59 @@ async def download_instrumental_stem(
     return FileResponse(
         path=str(path),
         filename=f"{job_id}_instrumental.wav",
+        media_type="audio/wav",
+    )
+
+
+@router.get(
+    "/{job_id}/download/enhanced",
+    summary="Download the enhanced audio file",
+    description=(
+        "Download the noise-reduced WAV produced by an `audio_enhance` job.\n\n"
+        "Only available for completed `audio_enhance` jobs."
+    ),
+)
+async def download_enhanced_audio(
+    job_id: str,
+    job_svc: JobService = Depends(get_job_service),
+) -> FileResponse:
+    job = await job_svc.get_by_id(job_id)
+
+    if job.job_type != JobType.AUDIO_ENHANCE:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Job '{job_id}' is of type '{job.job_type}', "
+                "not 'audio_enhance'. "
+                "Use /jobs/{id}/download/enhanced for audio enhancement jobs."
+            ),
+        )
+
+    if job.status != JobStatus.COMPLETED:
+        raise ResultNotReadyError(job_id=job_id, current_status=job.status)
+
+    result_files: dict = (job.parameters or {}).get("result_files", {})
+    file_path_str = result_files.get("enhanced_audio")
+
+    if not file_path_str and job.result_path:
+        file_path_str = job.result_path
+
+    if not file_path_str:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Enhanced audio path is not recorded for job '{job_id}'.",
+        )
+
+    path = Path(file_path_str)
+    if not path.exists():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Enhanced audio file has been deleted from disk.",
+        )
+
+    return FileResponse(
+        path=str(path),
+        filename=f"{job_id}_enhanced.wav",
         media_type="audio/wav",
     )
 

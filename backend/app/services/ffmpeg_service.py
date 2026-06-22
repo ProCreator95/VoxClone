@@ -180,6 +180,37 @@ class FFmpegService:
         await _run(cmd, f"Stereo WAV extraction failed for {source_path.name}")
         logger.info("extract_stereo_wav_done", dst=str(output_path))
 
+    async def extract_enhancement_wav(
+        self,
+        source_path: Path,
+        output_path: Path,
+        sample_rate: int | None = None,
+        channels: int | None = None,
+    ) -> None:
+        """Extract or transcode media to mono PCM WAV for DeepFilterNet (48 kHz default)."""
+        settings = get_settings()
+        rate = sample_rate if sample_rate is not None else settings.ENHANCEMENT_SAMPLE_RATE
+        ch = channels if channels is not None else settings.ENHANCEMENT_CHANNELS
+        cmd = [
+            self.ffmpeg,
+            "-i", str(source_path),
+            "-vn",
+            "-acodec", "pcm_s16le",
+            "-ar", str(rate),
+            "-ac", str(ch),
+            "-y",
+            str(output_path),
+        ]
+        logger.info(
+            "extract_enhancement_wav_start",
+            src=str(source_path),
+            dst=str(output_path),
+            sample_rate=rate,
+            channels=ch,
+        )
+        await _run(cmd, f"Enhancement WAV extraction failed for {source_path.name}")
+        logger.info("extract_enhancement_wav_done", dst=str(output_path))
+
     async def transcode_to_whisper_wav(
         self,
         source_path: Path,
