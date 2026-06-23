@@ -371,7 +371,46 @@ def run_async(coro):
 
 ## No Known Open Bugs
 
-As of Phase 5 (`phase5-final` @ `ddb2366` on `feature/source-separation`), no unresolved bugs are known.
+As of Phase 7 M2 validation on `feature/whisper-multilingual`, no unresolved application bugs are known.
+
+**Recently resolved (Phase 7):** Multilingual media was incorrectly transcribed with English-only Whisper models — fixed by language-first routing. See **Resolved Issue 1** below.
+
+---
+
+## Resolved Issues
+
+### Resolved Issue 1 — English-only Whisper forced for all jobs ✅ FIXED (Phase 7 M2)
+
+**Phase discovered:** 7 (multilingual validation)  
+**Status:** Fixed in application code — routing, not model quality.
+
+#### Symptom (before fix)
+
+Mixed-language media (English introduction + Urdu content) on default `subtitle_generation` jobs:
+
+- Model: `ggml-tiny.en.bin` regardless of content
+- Output: English hallucinations, repeated subtitles, `(speaking in foreign language)`
+- Karaoke: unusable transcript inherited from Whisper
+
+#### Root Cause
+
+`resolve_whisper_model()` mapped all size aliases to `.en.bin` files. `WHISPER_LANGUAGE=en` forced `-l en`. No multilingual models were installed or selectable.
+
+#### Fix Applied
+
+Phase 7 M2 — language-first routing in `whisper_models.py`:
+
+- `language: "ur"` (and other non-English codes) → `ggml-{tier}.bin` + matching `-l`
+- `language: "auto"` → multilingual model, omit `-l`
+- Omitted `language` + `WHISPER_ROUTING_POLICY=english_first` → unchanged Phase 5 `.en` behaviour
+
+#### Validation
+
+Manual Urdu job: `language: ur`, `whisper_model: small` → `ggml-small.bin`, `detected_language: ur`, substantially improved subtitles.
+
+Report: `docs/reports/PHASE7_M2_MULTILINGUAL_VALIDATION_REPORT.md`
+
+**Note:** Residual Urdu word errors are Whisper model-accuracy limits, not routing bugs.
 
 ---
 
@@ -429,6 +468,32 @@ Both `ggml-base.en.bin` and `ggml-small.en.bin` are already present in
 
 ---
 
+### Limitation 2 — Urdu transcription accuracy on `ggml-small.bin`
+
+**Phase discovered:** 7 (multilingual validation)  **Status:** Model-accuracy limitation, not a routing defect.
+
+#### Symptom
+
+Urdu subtitles after Phase 7 M2 routing fix are usable and contextually correct, but not word-perfect:
+
+- Phonetic substitutions (e.g. expected **بیک گراؤنڈ**, observed **بیگروانٹ**)
+- Occasional wrong word choice (e.g. expected **تھوڑا**, observed **کھوڑا**)
+- English technical terms in Urdu speech not always recognised
+
+#### Root Cause
+
+Whisper multilingual `ggml-small.bin` word error rate on Urdu + code-mixed tutorial speech.
+Routing correctly selects the multilingual model; remaining errors are ASR quality limits.
+
+#### Mitigation
+
+- Pass explicit `language: "ur"` (or `"auto"` for mixed media) — **required for non-English**
+- Try larger multilingual model: `ggml-medium.bin` (Phase 7 M3 candidate)
+- For English-only content, keep default `english_first` policy and `.en.bin` models
+- Roman Urdu export: future milestone — see `PHASE7_M2_MULTILINGUAL_VALIDATION_REPORT.md` Section 11
+
+---
+
 ## Bug Fix Order by Phase
 
 ```
@@ -445,4 +510,7 @@ Phase 5:
   Bug 8 (Demucs TorchCodec — pin torch 2.8.0)
   Bug 9 (async loop ownership — async_runner + run_async)
   Bug 1 refined: worker_process_init now uses persistent loop (see Bug 9)
+
+Phase 7:
+  Resolved Issue 1 (English-only Whisper forced — language-first routing)
 ```

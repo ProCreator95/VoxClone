@@ -4,11 +4,9 @@
 
 ---
 
-## Current State (as of 2026-06-20)
+## Current State (as of 2026-06-22)
 
-**Phases 1–5 are complete, committed, tagged, and pushed (production baseline).**
-
-**Phase 6 Milestone 2 is complete** — `audio_enhance` pipeline implemented.
+**Phases 1–6 are complete.** **Phase 7 Milestone 2 is complete and validated** — multilingual Whisper routing.
 
 ```
 Phase 1: Upload → ffprobe → Media + Job persistence → Redis progress
@@ -17,85 +15,53 @@ Phase 3: subtitle_burn → FFmpeg H.264 burn-in → burned MP4
 Phase 4: karaoke → word-level ASS → karaoke MP4 (with_vocals mode)
 Phase 5: vocal_separation + all karaoke modes + separation_job_id reuse
 Phase 6: audio_enhance → FFmpeg 48 kHz → deep-filter CLI → enhanced WAV
+Phase 7: multilingual Whisper routing — language-first model selection (M2 validated)
 ```
 
-**Git state:** `feature/audio-enhancement` · Phase 5 baseline `phase5-final` @ `ddb2366`
+**Git state:** `feature/whisper-multilingual`
 
 ---
 
 ## What to Do Next
 
-Phase 6 M2 is complete. Next planned work is **Phase 7 (Text-to-Speech)** — not started.
+Phase 7 M2 is validated. Next planned work is **Phase 7 Milestone 3** (Urdu quality / model benchmark) or **Phase 7 M4** (Roman Urdu transliteration — design only today).
 
-Before running `audio_enhance` jobs:
+### Quick test — Urdu subtitles
 
-1. Install/configure **`deep-filter` binary** — set `DEEPFILTER_BINARY` in `.env`
-   (default: `deep-filter` on PATH, or `tools/experiments/bin/deep-filter` from PoC)
-2. **Do not** `pip install deepfilternet` — see Integration Rules below
-3. Celery worker: `pip install -r requirements-ml.txt` (Demucs only)
-4. Restart workers after code changes
-
-### Quick test — Audio enhancement
+Requires multilingual models (`ggml-base.bin` or `ggml-small.bin`) in `backend/models/`.
 
 ```bash
 cd "/home/shz/Documents/Mustafa projects/VoxClone/backend"
 source .venv/bin/activate
 
-# Ensure deep-filter is available
-deep-filter --version   # or path from DEEPFILTER_BINARY
-
-MEDIA_ID=$(curl -s -X POST http://localhost:8000/api/v1/uploads \
-  -F "file=@/path/to/noisy_speech.wav" \
-  | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
-
 JOB_ID=$(curl -s -X POST http://localhost:8000/api/v1/jobs \
   -H "Content-Type: application/json" \
-  -d "{\"media_id\":\"$MEDIA_ID\",\"job_type\":\"audio_enhance\"}" \
+  -d "{\"media_id\":\"<MEDIA_UUID>\",\"job_type\":\"subtitle_generation\",\"parameters\":{\"language\":\"ur\",\"whisper_model\":\"small\"}}" \
   | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
 
-until curl -s "http://localhost:8000/api/v1/jobs/$JOB_ID/progress" \
-  | python3 -c "import sys,json; d=json.load(sys.stdin); exit(0 if d['status'] in ('completed','failed') else 1)" 2>/dev/null
-do sleep 10; done
-
-curl -O -J "http://localhost:8000/api/v1/jobs/$JOB_ID/download/enhanced"
+# Poll until completed, then verify parameters:
+curl -s "http://localhost:8000/api/v1/jobs/$JOB_ID" | python3 -m json.tool
+# Expect: whisper_model_file=ggml-small.bin, whisper_model_variant=multilingual, detected_language=ur
 ```
 
-See `docs/reports/PHASE6_M2_AUDIO_ENHANCEMENT_IMPLEMENTATION.md` for full validation procedure.
+**Mixed English + Urdu media:** use `"language": "auto"`.
+
+**English-only (default):** omit `language` — `WHISPER_ROUTING_POLICY=english_first` preserves Phase 5 behaviour.
+
+See `docs/reports/PHASE7_M2_MULTILINGUAL_VALIDATION_REPORT.md` for validation evidence.
 
 ---
 
-## DeepFilterNet Integration Rules
+## Whisper routing (Phase 7)
 
-Project policy for Phase 6. Full document: `docs/reports/PHASE6_DEPENDENCY_PROTECTION_RULES.md`
+| `parameters.language` | Model | CLI flag |
+|----------------------|-------|----------|
+| omitted (default policy) | `ggml-{tier}.en.bin` | `-l en` |
+| `"en"` | `ggml-{tier}.en.bin` | `-l en` |
+| `"ur"`, `"hi"`, etc. | `ggml-{tier}.bin` | `-l <code>` |
+| `"auto"` | `ggml-{tier}.bin` | omit `-l` |
 
-### Dependency Protection
-
-The validated Phase 5 ML stack is production baseline and must be preserved:
-
-```text
-torch==2.8.0+cpu
-torchaudio==2.8.0+cpu
-demucs==4.0.1
-numpy==2.4.6
-packaging==26.2
-```
-
-Do not upgrade, downgrade, or replace these packages as part of Phase 6.
-
-### DeepFilterNet Installation Policy
-
-DeepFilterNet integration **SHALL** use the `deep-filter` CLI binary.
-
-The Python package (`pip install deepfilternet`) shall **NOT** be added to
-`requirements.txt` or `requirements-ml.txt`.
-
-### Approved Architecture
-
-| System | Integration |
-|--------|-------------|
-| Whisper | whisper.cpp subprocess |
-| Demucs | demucs subprocess |
-| DeepFilterNet | `deep-filter` subprocess |
+Config: `WHISPER_ROUTING_POLICY=english_first` (default).
 
 ---
 
@@ -120,16 +86,27 @@ celery -A app.tasks.celery_app:celery_app worker \
 
 ---
 
-## Key Files (Phase 6)
+## Key Files (Phase 7)
 
 | File | Role |
 |------|------|
-| `app/services/audio_enhancement_service.py` | deep-filter subprocess wrapper |
-| `app/services/ffmpeg_service.py` | `extract_enhancement_wav()` — 48 kHz mono prep |
-| `app/tasks/media_tasks.py` | `audio_enhance_task` |
-| `app/api/v1/endpoints/jobs.py` | `/download/enhanced` |
-| `app/core/config.py` | `DEEPFILTER_BINARY`, `ENHANCEMENT_*` settings |
-| `tools/experiments/deepfilternet_poc.py` | Isolated M1 PoC |
+| `app/services/whisper_models.py` | Language-first routing, dual model registry |
+| `app/services/whisper_service.py` | Subprocess; uses resolved `cli_language` |
+| `app/schemas/job.py` | Validates `parameters.language` on Whisper jobs |
+| `app/core/config.py` | `WHISPER_ROUTING_POLICY` |
+| `tests/test_whisper_models.py` | Routing unit tests (13 cases) |
+
+---
+
+## Integration Rules (unchanged)
+
+| System | Integration |
+|--------|-------------|
+| Whisper | whisper.cpp subprocess |
+| Demucs | demucs subprocess |
+| DeepFilterNet | `deep-filter` subprocess |
+
+Full Phase 6 policy: `docs/reports/PHASE6_DEPENDENCY_PROTECTION_RULES.md`
 
 ---
 
@@ -138,8 +115,10 @@ celery -A app.tasks.celery_app:celery_app worker \
 ```
 docs/context/MASTER_PROJECT_HANDOFF.md
 docs/context/CURRENT_PROJECT_STATE.md
-docs/reports/PHASE6_M2_AUDIO_ENHANCEMENT_IMPLEMENTATION.md
-docs/reports/PHASE6_DEPENDENCY_PROTECTION_RULES.md
-docs/reports/PHASE6_M1_DEEPFILTERNET_ANALYSIS.md
+docs/reports/PHASE7_M1_WHISPER_MULTILINGUAL_DESIGN.md
+docs/reports/PHASE7_M2_MULTILINGUAL_ROUTING_IMPLEMENTATION.md
+docs/reports/PHASE7_M2_MULTILINGUAL_VALIDATION_REPORT.md
+docs/reports/PHASE6_M2_VALIDATION_REPORT.md
 docs/reports/PHASE5_*.md
+docs/testing/WHISPER_CPP_SETUP.md
 ```

@@ -7,15 +7,15 @@ Invokes the whisper.cpp CLI binary as an async subprocess.
 No Python ML dependencies (no PyTorch, no CUDA, no openai-whisper).
 
 Configuration (all from Settings / .env):
-    WHISPER_CPP_BINARY  — name or absolute path of the whisper-cli binary
-    WHISPER_MODEL_PATH  — absolute or relative path to a GGML model file
-    WHISPER_THREADS     — CPU thread count passed to whisper.cpp (-t)
-    WHISPER_LANGUAGE    — BCP-47 code (e.g. "en") or "" for auto-detect
+    WHISPER_CPP_BINARY      — name or absolute path of the whisper-cli binary
+    WHISPER_MODEL_PATH      — absolute or relative path to a GGML model file
+    WHISPER_THREADS         — CPU thread count passed to whisper.cpp (-t)
+    WHISPER_ROUTING_POLICY  — english_first | multilingual_default (when language omitted)
+    WHISPER_LANGUAGE        — legacy setting; per-job language routing uses parameters.language
 
-Supported model files (English-only, CPU-optimised):
-    ggml-tiny.en.bin    ~75 MB   fastest, lowest accuracy
-    ggml-base.en.bin   ~142 MB   good balance
-    ggml-small.en.bin  ~466 MB   higher accuracy, slower
+Supported model files (CPU-optimised, per tier):
+    English-only:     ggml-tiny.en.bin | ggml-base.en.bin | ggml-small.en.bin
+    Multilingual:     ggml-tiny.bin    | ggml-base.bin    | ggml-small.bin
 
 Usage::
 
@@ -39,6 +39,7 @@ from typing import Optional
 from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.services.whisper_models import (
+    ResolvedWhisperModel,
     model_missing_message,
     resolve_whisper_model,
 )
@@ -364,14 +365,17 @@ class WhisperService:
         _resolve_binary(settings.WHISPER_CPP_BINARY)
 
     @staticmethod
-    def _validate_model_file(model_path: Path, alias: str) -> None:
-        if not model_path.exists():
-            raise RuntimeError(model_missing_message(model_path, alias))
+    def _validate_model_file(resolved: ResolvedWhisperModel) -> None:
+        if not resolved.path.exists():
+            raise RuntimeError(
+                model_missing_message(resolved.path, resolved.alias, resolved.variant)
+            )
 
     async def validate(
         self,
         whisper_model: Optional[str] = None,
         job_type: Optional[str] = None,
+        language: Optional[str] = None,
     ) -> None:
         """
         Verify the environment is ready for transcription.
@@ -383,10 +387,10 @@ class WhisperService:
         Raises RuntimeError with an actionable message on the first failure.
         """
         self._validate_binary()
-        alias, model_path = resolve_whisper_model(
-            whisper_model, job_type or "", self._settings
+        resolved = resolve_whisper_model(
+            whisper_model, job_type or "", language, self._settings
         )
-        self._validate_model_file(model_path, alias)
+        self._validate_model_file(resolved)
 
     async def is_available(self) -> bool:
         """Return True if both the binary and model file are present."""
@@ -410,9 +414,9 @@ class WhisperService:
         Args:
             audio_path:       Path to a 16kHz mono WAV file (FFmpegService.extract_audio
                               produces this format automatically).
-            language:         BCP-47 language code override (e.g. "en").
-                              Falls back to WHISPER_LANGUAGE from settings.
-                              Pass None or "" to let whisper.cpp auto-detect.
+            language:         BCP-47 code (e.g. "en", "ur"), or "auto" for
+                              whisper.cpp auto-detection on a multilingual model.
+                              When omitted, WHISPER_ROUTING_POLICY selects the variant.
             word_timestamps:  When True, passes --output-json-full to whisper.cpp
                               instead of the standard --output-json.  The resulting
                               BPE token array is grouped into WordTimestamp objects
@@ -434,22 +438,23 @@ class WhisperService:
                 "Ensure FFmpeg audio extraction completed successfully."
             )
 
-        resolved_alias, model_path = resolve_whisper_model(
-            whisper_model, job_type or "", self._settings
+        resolved = resolve_whisper_model(
+            whisper_model, job_type or "", language, self._settings
         )
         self._validate_binary()
-        self._validate_model_file(model_path, resolved_alias)
+        self._validate_model_file(resolved)
 
         binary  = _resolve_binary(self._settings.WHISPER_CPP_BINARY)
         threads = self._settings.WHISPER_THREADS
-        lang    = language or self._settings.WHISPER_LANGUAGE or None
 
         logger.info(
             "whisper_cpp_transcribe_start",
             binary=binary,
-            whisper_model=resolved_alias,
-            model=model_path.name,
-            language=lang or "auto",
+            whisper_model=resolved.alias,
+            whisper_model_variant=resolved.variant,
+            model=resolved.path.name,
+            language=resolved.cli_language or "auto",
+            language_requested=resolved.language_requested,
             threads=threads,
             audio=str(audio_path),
             word_timestamps=word_timestamps,
@@ -457,7 +462,12 @@ class WhisperService:
         )
 
         result = await self._run_subprocess(
-            binary, model_path, audio_path, threads, lang, word_timestamps
+            binary,
+            resolved.path,
+            audio_path,
+            threads,
+            resolved.cli_language,
+            word_timestamps,
         )
 
         logger.info(

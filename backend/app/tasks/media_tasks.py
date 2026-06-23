@@ -37,7 +37,11 @@ from app.services.audio_enhancement_service import (
     AudioEnhancementError,
     AudioEnhancementService,
 )
-from app.services.whisper_models import WHISPER_MODEL_DEFAULTS, resolve_whisper_model
+from app.services.whisper_models import (
+    WHISPER_MODEL_DEFAULTS,
+    apply_whisper_metadata,
+    resolve_whisper_model,
+)
 from app.services.whisper_service import WhisperService
 from app.models.stem_metadata import (
     STEM_ORIGIN_CANONICAL,
@@ -159,7 +163,7 @@ def generate_subtitles_task(self: Task, job_id: str) -> dict:
         6. Set job.result_path to the .srt file (primary output).
 
     Parameters (passed via job.parameters at job-creation time):
-        language        (str, optional  — default: WHISPER_LANGUAGE from settings)
+        language        (str, optional  — BCP-47 code or "auto"; omitted uses english_first policy)
         whisper_model   (str, optional  — tiny | base | small; default: tiny)
         audio_path      (str, optional  — testing override for pre-extracted WAV)
     """
@@ -310,7 +314,7 @@ def generate_subtitles_task(self: Task, job_id: str) -> dict:
 
                 # ── 3. Transcribe ─────────────────────────────────────────────
                 # Language may be overridden per-job via parameters["language"].
-                # Falls back to WHISPER_LANGUAGE from settings (default: "en").
+                # Routing: see resolve_whisper_model() and WHISPER_ROUTING_POLICY.
                 language: Optional[str] = params.get("language") or None
                 whisper_model_param: Optional[str] = params.get("whisper_model")
 
@@ -349,13 +353,13 @@ def generate_subtitles_task(self: Task, job_id: str) -> dict:
                 }
                 params["detected_language"] = transcript.language
                 params["segment_count"] = len(transcript.segments)
-                resolved_alias, model_path = resolve_whisper_model(
+                resolved = resolve_whisper_model(
                     whisper_model_param,
                     JobType.SUBTITLE_GENERATION,
+                    language,
                     settings,
                 )
-                params["whisper_model"] = resolved_alias
-                params["whisper_model_file"] = model_path.name
+                apply_whisper_metadata(params, resolved)
 
                 async with get_db_context() as db:
                     job_svc = JobService(db)
@@ -706,14 +710,15 @@ def _karaoke_write_transcript_files(job_id: str, transcript: Any) -> dict[str, s
 def _karaoke_persist_whisper_metadata(
     params: dict,
     whisper_model_param: Optional[str],
+    language: Optional[str],
 ) -> None:
-    resolved_alias, model_path = resolve_whisper_model(
+    resolved = resolve_whisper_model(
         whisper_model_param,
         JobType.KARAOKE,
+        language,
         settings,
     )
-    params["whisper_model"] = resolved_alias
-    params["whisper_model_file"] = model_path.name
+    apply_whisper_metadata(params, resolved)
 
 
 async def _karaoke_run_inline_demucs(
@@ -770,7 +775,7 @@ def karaoke_task(self: Task, job_id: str) -> dict:
 
     Parameters (passed via job.parameters at job-creation time):
         output_mode     (str, optional  — default: karaoke_video_with_vocals)
-        language        (str, optional  — default: WHISPER_LANGUAGE from settings)
+        language        (str, optional  — BCP-47 code or "auto"; omitted uses english_first policy)
         whisper_model   (str, optional  — tiny | base | small; default: base)
         separation_model (str, optional — Demucs model; inline separation only)
         separation_job_id (str, optional — reuse completed vocal_separation stems)
@@ -1083,7 +1088,7 @@ def karaoke_task(self: Task, job_id: str) -> dict:
                 params["word_count"] = total_words
                 params["segment_count"] = segment_count
                 params["has_word_timestamps"] = has_words
-                _karaoke_persist_whisper_metadata(params, whisper_model_param)
+                _karaoke_persist_whisper_metadata(params, whisper_model_param, language)
 
                 async with get_db_context() as db:
                     job_svc = JobService(db)

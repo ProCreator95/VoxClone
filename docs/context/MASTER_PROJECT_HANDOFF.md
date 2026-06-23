@@ -1,10 +1,11 @@
 # VoxClone — Master Project Handoff
 
-**Date:** 2026-06-20
-**Branch:** `feature/audio-enhancement` (Phase 6 development; Phase 5 baseline on `feature/source-separation`)
-**Commit:** `ddb2366 Phase 5 Milestone 4: stem reuse and reusable karaoke outputs` (Phase 5 production baseline)
+**Date:** 2026-06-22
+**Branch:** `feature/whisper-multilingual` (Phase 7 development; Phase 6 on `feature/audio-enhancement`)
+**Commit:** Phase 5 production baseline `ddb2366` · Phase 7 M2 multilingual routing implemented + validated
 **Tags:** `v0.1-foundation` · `phase2-subtitles-working` · `phase3-subtitle-burn` · `phase4-karaoke-generation` · `phase5-source-separation` · `phase5-complete` · `phase5-final`
-**Phase 6:** Milestone 2 complete — `audio_enhance` pipeline implemented (`deep-filter` CLI subprocess)
+**Phase 6:** Milestone 2 complete — `audio_enhance` pipeline (`deep-filter` CLI subprocess)
+**Phase 7:** Milestone 2 complete + validated — language-first multilingual Whisper routing
 
 > This document is completely self-contained. A new developer can continue
 > the project using only this file.
@@ -28,7 +29,8 @@ All AI models run locally — no cloud API keys, no GPU required for Phase 2.
 
 **Planned use cases (future phases):**
 - Audio enhancement (noise removal) — Phase 6
-- Text-to-speech — Phase 7
+- Multilingual speech recognition (Urdu, Hindi, etc.) — Phase 7
+- Text-to-speech — Phase 8 (planned; was Phase 7 in early roadmap)
 - Voice replacement / dubbing — Phase 8
 - Voice cloning — Phase 9+
 
@@ -174,9 +176,12 @@ VoxClone/
 │   ├── uploads/                     Uploaded media files
 │   ├── processed/                   Pipeline output files
 │   ├── models/                      GGML model files
-│   │   ├── ggml-tiny.en.bin         75 MB  (subtitle_generation default)
-│   │   ├── ggml-base.en.bin         142 MB (karaoke default)
-│   │   └── ggml-small.en.bin        466 MB
+│   │   ├── ggml-tiny.en.bin         75 MB  (subtitle_generation default, english_first)
+│   │   ├── ggml-base.en.bin         142 MB (karaoke default, english_first)
+│   │   ├── ggml-small.en.bin        466 MB
+│   │   ├── ggml-tiny.bin             75 MB  (multilingual)
+│   │   ├── ggml-base.bin            142 MB  (multilingual — min for Urdu)
+│   │   └── ggml-small.bin           466 MB  (multilingual — validated Urdu)
 │   ├── .env                         Active configuration
 │   ├── .env.example                 Configuration template
 │   ├── requirements.txt
@@ -224,6 +229,7 @@ FFPROBE_PATH=ffprobe
 # ── Whisper (whisper.cpp — NO Python ML dependencies) ──
 WHISPER_CPP_BINARY=../tools/whisper.cpp/build/bin/whisper-cli
 WHISPER_MODEL_PATH=models/ggml-tiny.en.bin
+WHISPER_ROUTING_POLICY=english_first
 WHISPER_THREADS=8
 WHISPER_LANGUAGE=en
 
@@ -339,13 +345,16 @@ POST /api/v1/jobs
 | `voice_replacement` | 8 | ⏳ HTTP 422 — not in `_TASK_MAP` |
 | `voice_clone` | 9+ | ⏳ HTTP 422 — not in `_TASK_MAP` |
 
-**Common parameters (Phase 5):**
+**Common parameters (Phase 5–7):**
 
 ```json
 { "whisper_model": "tiny" | "base" | "small" }
+{ "language": "en" | "ur" | "hi" | "auto" | … }
 { "separation_model": "htdemucs" }
 { "output_mode": "karaoke_video_with_vocals" | "karaoke_video_no_vocals" }
 ```
+
+Omitted `language` with `WHISPER_ROUTING_POLICY=english_first` (default) uses English-only models — Phase 5 behaviour unchanged.
 
 ---
 
@@ -386,10 +395,12 @@ POST /api/v1/jobs
 | celery_task_id | String(255) | Celery task UUID |
 | started_at, completed_at | DateTime(tz) | |
 
-**Subtitle job `parameters` after completion:**
+**Subtitle job `parameters` after completion (English default):**
 ```json
 {
-  "language": "en",
+  "whisper_model": "tiny",
+  "whisper_model_file": "ggml-tiny.en.bin",
+  "whisper_model_variant": "english",
   "result_files": {
     "transcript": "/abs/path/processed/<id>_transcript.txt",
     "srt":        "/abs/path/processed/<id>_subtitles.srt",
@@ -397,6 +408,17 @@ POST /api/v1/jobs
   },
   "detected_language": "en",
   "segment_count": 42
+}
+```
+
+**Urdu job example (Phase 7 validated):**
+```json
+{
+  "language_requested": "ur",
+  "whisper_model": "small",
+  "whisper_model_file": "ggml-small.bin",
+  "whisper_model_variant": "multilingual",
+  "detected_language": "ur"
 }
 ```
 
@@ -916,11 +938,12 @@ ffprobe "processed/${BURN_JOB_ID}_subtitled.mp4" 2>&1 | grep -E "Duration|Video:
 | 4 | Karaoke Generation | ✅ `phase4-karaoke-generation` (`47be178`) |
 | 5 | Source Separation / Vocal Removal | ✅ `phase5-final` (`ddb2366`) on `feature/source-separation` |
 | 6 | Audio Enhancement (DeepFilterNet) | ✅ M2 complete — `audio_enhance_task` + `/download/enhanced` |
-| 7 | Text-to-Speech (Piper) | ⏳ planned |
-| 8 | Voice Replacement | ⏳ planned |
-| 9+ | Voice Cloning (OpenVoice) | ⏳ planned |
-| 10 | Flutter Frontend | ⏳ planned |
-| 11 | Production Hardening | ⏳ planned |
+| 7 | Multilingual Whisper Routing | ✅ M2 complete + validated — language-first `.en` / multilingual selection |
+| 8 | Text-to-Speech (Piper) | ⏳ planned |
+| 9 | Voice Replacement | ⏳ planned |
+| 10+ | Voice Cloning (OpenVoice) | ⏳ planned |
+| 11 | Flutter Frontend | ⏳ planned |
+| 12 | Production Hardening | ⏳ planned |
 
 ### Phase 6 — Audio Enhancement ✅ M2 COMPLETE
 
@@ -939,6 +962,25 @@ Reports: `docs/reports/PHASE6_M1_DEEPFILTERNET_ANALYSIS.md`,
 `docs/reports/PHASE6_M2_AUDIO_ENHANCEMENT_IMPLEMENTATION.md`
 
 PoC: `backend/tools/experiments/deepfilternet_poc.py`
+
+### Phase 7 — Multilingual Whisper Routing ✅ M2 COMPLETE + VALIDATED
+
+Language-first model selection: English → `.en.bin` + `-l en`; non-English / `auto` → `.bin` multilingual models.
+
+**Milestone 1:** investigation + design (`PHASE7_M1_WHISPER_MULTILINGUAL_DESIGN.md`).
+**Milestone 2:** `whisper_models.py` routing, `WHISPER_ROUTING_POLICY`, API language validation.
+**Validation:** Manual Urdu E2E on mixed-language tutorial media — routing confirmed; quality improved; residual WER limits documented.
+
+```json
+{ "parameters": { "language": "ur", "whisper_model": "small" } }
+```
+
+Reports: `docs/reports/WHISPER_MULTILINGUAL_MODEL_SELECTION_ANALYSIS.md`,
+`docs/reports/PHASE7_M1_WHISPER_MULTILINGUAL_DESIGN.md`,
+`docs/reports/PHASE7_M2_MULTILINGUAL_ROUTING_IMPLEMENTATION.md`,
+`docs/reports/PHASE7_M2_MULTILINGUAL_VALIDATION_REPORT.md`
+
+**Next (M3 candidates):** `ggml-medium.bin` Urdu benchmark, mixed-language `auto` guidance, Roman Urdu transliteration (design in validation report).
 
 ### DeepFilterNet Integration Rules
 
@@ -1007,7 +1049,7 @@ Any future proposal to use the Python DeepFilterNet package must include:
 4. Python 3.12 compatibility validation
 5. Explicit approval in a milestone report
 
-### Phase 7+ — TTS, Voice Replacement, Voice Cloning
+### Phase 8+ — TTS, Voice Replacement, Voice Cloning
 
 See original phase descriptions in prior roadmap sections; APIs for
 `voice_replacement` and `voice_clone` return HTTP 422 until tasks are added to `_TASK_MAP`.
@@ -1066,7 +1108,7 @@ git tag -l 'phase*' 'v0.1*'
 | `app/services/ffmpeg_service.py` | `_escape_filter_path()`, `extract_audio()`, `burn_subtitles()`, `burn_ass()`, `extract_stereo_wav()` |
 | `app/services/source_separation_service.py` | Demucs subprocess; stderr in failure messages |
 | `app/services/audio_enhancement_service.py` | deep-filter subprocess; stderr in failure messages |
-| `app/services/whisper_models.py` | Per-job whisper model resolution |
+| `app/services/whisper_models.py` | Language-first whisper model routing (Phase 7) |
 | `app/services/separation_models.py` | `htdemucs` whitelist |
 | `app/services/karaoke_modes.py` | Karaoke `output_mode` validation |
 | `app/models/stem_metadata.py` | `canonical` vs `inline` stem ownership |
@@ -1385,4 +1427,4 @@ git tag -a phase4-karaoke -m "Phase 4: karaoke generation complete"
 
 ---
 
-*Last updated: 2026-06-20 — Phase 5 baseline (`phase5-final`); Phase 6 M2 complete on `feature/audio-enhancement`.*
+*Last updated: 2026-06-22 — Phase 7 M2 multilingual Whisper routing validated on `feature/whisper-multilingual`.*

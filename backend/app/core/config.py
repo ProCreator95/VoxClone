@@ -49,14 +49,19 @@ class Settings(BaseSettings):
     # ── Whisper (whisper.cpp backend — no Python ML dependencies) ────────────
     # Binary name on PATH or absolute path to the compiled whisper-cli executable
     WHISPER_CPP_BINARY: str = "whisper-cli"
-    # Absolute or relative path to the GGML model file
-    # Supported: ggml-tiny.en.bin | ggml-base.en.bin | ggml-small.en.bin
+    # Absolute or relative path to the GGML model file (global fallback).
+    # English-only: ggml-tiny.en.bin | ggml-base.en.bin | ggml-small.en.bin
+    # Multilingual: ggml-tiny.bin | ggml-base.bin | ggml-small.bin
     WHISPER_MODEL_PATH: Path = Path("models/ggml-tiny.en.bin")
     # CPU thread count passed to whisper.cpp (-t flag)
     WHISPER_THREADS: int = 4
     # Language code passed to whisper.cpp (-l flag). Use "en" for .en models.
     # Set to "" to let whisper.cpp auto-detect (not recommended for .en models).
     WHISPER_LANGUAGE: str = "en"
+    # Model variant routing when parameters.language is omitted.
+    # english_first (default): English-only .en.bin models + -l en (Phase 5 behaviour).
+    # multilingual_default: multilingual .bin models + whisper.cpp auto-detect.
+    WHISPER_ROUTING_POLICY: str = "english_first"
 
     # ── Source separation (Demucs) ────────────────────────────────────────────
     DEMUCS_MODEL: str = "htdemucs"

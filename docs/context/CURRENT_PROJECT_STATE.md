@@ -1,10 +1,10 @@
 # VoxClone — Current Project State
 
-**Date:** 2026-06-20
-**Branch:** `feature/audio-enhancement` (Phase 6 development)
+**Date:** 2026-06-22
+**Branch:** `feature/whisper-multilingual` (Phase 7 development)
 **Phase 5 baseline:** `feature/source-separation` · `ddb2366` · tags `phase5-final`
-**Last commit:** Phase 5 production baseline at `ddb2366`
-**Tags:** `v0.1-foundation` · `phase2-subtitles-working` · `phase3-subtitle-burn` · `phase4-karaoke-generation` · `phase5-source-separation` · `phase5-complete` · `phase5-final`
+**Phase 6 baseline:** `feature/audio-enhancement` · `audio_enhance` complete
+**Phase 7:** Milestone 2 complete + validated — multilingual Whisper routing
 
 ---
 
@@ -26,16 +26,22 @@
 ### Whisper Models Present
 
 ```
-backend/models/ggml-tiny.en.bin     75 MB   (subtitle_generation default)
-backend/models/ggml-base.en.bin    142 MB   (karaoke default)
-backend/models/ggml-small.en.bin   466 MB
+backend/models/ggml-tiny.en.bin     75 MB   (subtitle_generation default, english_first)
+backend/models/ggml-base.en.bin    142 MB   (karaoke default, english_first)
+backend/models/ggml-small.en.bin   466 MB   (English high accuracy)
+backend/models/ggml-tiny.bin         75 MB   (multilingual)
+backend/models/ggml-base.bin        142 MB   (multilingual — recommended min for Urdu)
+backend/models/ggml-small.bin       466 MB   (multilingual — validated for Urdu)
 ```
+
+Total dual set: ~1.36 GB. English-only hosts need only the `.en.bin` trio (~681 MB).
 
 ### Active `.env` Settings (representative)
 
 ```
 WHISPER_CPP_BINARY=../tools/whisper.cpp/build/bin/whisper-cli
 WHISPER_MODEL_PATH=models/ggml-tiny.en.bin
+WHISPER_ROUTING_POLICY=english_first
 WHISPER_THREADS=8
 WHISPER_LANGUAGE=en
 DEMUCS_MODEL=htdemucs
@@ -67,7 +73,7 @@ VoxClone/
 │   │   │   ├── media.py
 │   │   │   ├── job.py               JobType includes vocal_separation
 │   │   │   └── stem_metadata.py     canonical vs inline stem ownership
-│   │   ├── schemas/job.py           whisper_model, separation_model, output_mode validation
+│   │   ├── schemas/job.py           whisper_model, language, separation_model, output_mode validation
 │   │   ├── services/
 │   │   │   ├── ffmpeg_service.py    probe, extract, burn, extract_stereo_wav, transcode
 │   │   │   ├── job_service.py       lifecycle + Redis progress
@@ -76,16 +82,17 @@ VoxClone/
 │   │   │   ├── separation_models.py htdemucs whitelist
 │   │   │   ├── karaoke_modes.py     karaoke output_mode validation (4 modes)
 │   │   │   ├── stem_reuse.py        canonical stem reuse for karaoke
-│   │   │   ├── whisper_models.py    per-job whisper model resolution
+│   │   │   ├── whisper_models.py    language-first model routing (Phase 7)
 │   │   │   ├── whisper_service.py   whisper.cpp subprocess
 │   │   │   └── upload_service.py
 │   │   ├── tasks/
 │   │   │   ├── async_runner.py      persistent worker event loop + run_async()
 │   │   │   ├── celery_app.py        Celery config + worker_process_init
-│   │   │   └── media_tasks.py       All Celery tasks (Phases 1–5)
+│   │   │   └── media_tasks.py       All Celery tasks (Phases 1–6)
 │   │   └── main.py
 │   ├── processed/                   Pipeline outputs + .demucs_tmp/
-│   ├── models/                      GGML whisper models
+│   ├── models/                      GGML whisper models (English + multilingual)
+│   ├── tests/                       Unit tests (whisper routing)
 │   ├── requirements.txt
 │   ├── requirements-ml.txt          Pinned torch/torchaudio/demucs (worker only)
 │   └── .env.example
@@ -122,7 +129,7 @@ Tag: `phase4-karaoke-generation` · Commit: `47be178`
 
 | Component | Status | Notes |
 |-----------|--------|-------|
-| `whisper_models.py` | ✅ | Per-job `whisper_model`: `tiny` \| `base` \| `small`; defaults by job type |
+| `whisper_models.py` | ✅ | Per-job `whisper_model`: `tiny` \| `base` \| `small`; language-first routing (Phase 7) |
 | `vocal_separation` job type | ✅ | Canonical stem owner (`stem_origin: canonical`) |
 | `SourceSeparationService` | ✅ | Demucs subprocess; maps `no_vocals.wav` → `instrumental.wav` |
 | `separation_models.py` | ✅ | Whitelist: `htdemucs` only |
@@ -165,6 +172,33 @@ Tag: `phase5-final` · Commit: `ddb2366` (also `phase5-complete` at same commit;
 | PoC | ✅ | `backend/tools/experiments/deepfilternet_poc.py` |
 
 **Integration:** CLI subprocess only — `deepfilternet` **not** in requirements files.
+
+### Phase 7 — Multilingual Whisper Routing ✅ M2 COMPLETE + VALIDATED
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| M1 design | ✅ | `docs/reports/PHASE7_M1_WHISPER_MULTILINGUAL_DESIGN.md` |
+| M2 implementation | ✅ | Language-first routing in `whisper_models.py` |
+| M2 validation | ✅ | Manual Urdu E2E — `docs/reports/PHASE7_M2_MULTILINGUAL_VALIDATION_REPORT.md` |
+| Dual model registry | ✅ | `.en.bin` (English) + `.bin` (multilingual) per tier |
+| `WHISPER_ROUTING_POLICY` | ✅ | Default `english_first` — Phase 5 behaviour preserved |
+| `parameters.language` | ✅ | BCP-47 codes + `"auto"` validated on Whisper jobs |
+| Urdu validated | ✅ | `language: ur` + `whisper_model: small` → `ggml-small.bin`, `detected_language: ur` |
+
+**Urdu job example:**
+
+```json
+{
+  "job_type": "subtitle_generation",
+  "parameters": { "language": "ur", "whisper_model": "small" }
+}
+```
+
+**Mixed-language media:** use `"language": "auto"` (requires multilingual models on disk).
+
+**Known residual limitation:** Urdu word-level accuracy on `ggml-small.bin` — model WER, not routing. See validation report.
+
+**Next candidates (M3):** `ggml-medium.bin` benchmark, mixed-language auto routing, Roman Urdu transliteration (design only in M2 validation report).
 
 ### DeepFilterNet Integration Rules
 
@@ -274,31 +308,8 @@ Report: `docs/reports/PHASE5_MILESTONE4_STEM_REUSE.md`
 
 ## Git State
 
-**Branch:** `feature/source-separation` — synced with `origin/feature/source-separation`
-**Working tree:** clean (Phase 5 committed and tagged)
+**Branch:** `feature/whisper-multilingual` — Phase 7 M2 implementation + validation documented
 
-### Commit log
+**Working tree:** see `git status` for uncommitted docs/code on this branch.
 
-```
-ddb2366  Phase 5 Milestone 4: stem reuse and reusable karaoke outputs   ← HEAD, phase5-complete, phase5-final
-fe6b264  Docs: align project documentation with Phase 5 state
-c0f67c5  Phase 5: source separation, karaoke modes, and ML worker infrastructure   ← phase5-source-separation
-47be178  Phase 4: karaoke generation complete   ← phase4-karaoke-generation
-cd7133b  Phase 3: subtitle burn-in complete
-2f9f643  Phase 3: subtitle burn-in complete
-19f8cc8  Finalize Phase 2 documentation and handoff
-94f77e0  Phase 2 subtitle generation complete
-52c5d3e  Phase 1 foundation validated   ← v0.1-foundation
-```
-
-### Tags
-
-```
-v0.1-foundation              @ 52c5d3e
-phase2-subtitles-working     @ 94f77e0
-phase3-subtitle-burn         @ 2f9f643
-phase4-karaoke-generation    @ 47be178
-phase5-source-separation     @ c0f67c5   (M1–M3 + ML infrastructure)
-phase5-complete              @ ddb2366   (full Phase 5 including M4)
-phase5-final                 @ ddb2366   (validated Phase 5 complete)
-```
+**Phase tags (prior releases):** `phase5-final` @ `ddb2366` · Phase 6 on `feature/audio-enhancement`

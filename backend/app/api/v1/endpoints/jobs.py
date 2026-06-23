@@ -78,6 +78,8 @@ router = APIRouter(prefix="/jobs", tags=["jobs"])
         "Poll `/jobs/{id}/progress` for live status updates.\n\n"
         "**Whisper model selection** (optional, in `parameters`):\n"
         "- `whisper_model`: `tiny` | `base` | `small`\n"
+        "- `language`: BCP-47 code (e.g. `en`, `ur`, `hi`) or `auto` for auto-detect\n"
+        "- Omitted `language` uses `WHISPER_ROUTING_POLICY=english_first` (English .en models)\n"
         "- Default for `subtitle_generation`: `tiny`\n"
         "- Default for `karaoke`: `base`\n\n"
         "**Vocal separation** (`job_type`: `vocal_separation`):\n"

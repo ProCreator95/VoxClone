@@ -15,6 +15,7 @@ from app.services.karaoke_modes import (
 from app.services.separation_models import validate_separation_model
 from app.services.whisper_models import (
     WHISPER_MODEL_DEFAULTS,
+    validate_whisper_language,
     validate_whisper_model_alias,
 )
 
@@ -35,7 +36,8 @@ class JobCreate(BaseModel):
         default=None,
         description=(
             "Pipeline-specific configuration. "
-            "Whisper jobs accept optional `whisper_model`: tiny | base | small. "
+            "Whisper jobs accept optional `whisper_model`: tiny | base | small, "
+            "and optional `language`: BCP-47 code (e.g. en, ur) or 'auto'. "
             f"Defaults: subtitle_generation={WHISPER_MODEL_DEFAULTS[JobType.SUBTITLE_GENERATION]!r}, "
             f"karaoke={WHISPER_MODEL_DEFAULTS[JobType.KARAOKE]!r}."
         ),
@@ -64,6 +66,17 @@ class JobCreate(BaseModel):
                 raise ValueError(
                     f"parameters.whisper_model is only supported for job types: {allowed}"
                 )
+
+        language = params.get("language")
+        if language is not None:
+            if not isinstance(language, str):
+                raise ValueError("parameters.language must be a string")
+            if self.job_type not in _WHISPER_JOB_TYPES:
+                allowed = ", ".join(sorted(_WHISPER_JOB_TYPES))
+                raise ValueError(
+                    f"parameters.language is only supported for job types: {allowed}"
+                )
+            validate_whisper_language(language)
 
         separation_model = params.get("separation_model")
         if separation_model is not None:

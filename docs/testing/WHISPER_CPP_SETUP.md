@@ -116,6 +116,37 @@ wget -O models/ggml-small.en.bin \
 
 **Size:** ~466 MB | **Speed:** ~1–3× real-time | **Accuracy:** excellent
 
+### Multilingual models (Phase 7 — Urdu, Hindi, Arabic, Persian, etc.)
+
+Required when job `parameters.language` is a non-English code or `"auto"`.
+English-only hosts using default `WHISPER_ROUTING_POLICY=english_first` do not need these.
+
+```bash
+mkdir -p models
+
+wget -O models/ggml-tiny.bin \
+  https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin
+
+wget -O models/ggml-base.bin \
+  https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin
+
+wget -O models/ggml-small.bin \
+  https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin
+```
+
+| Tier | File | Size | When routed |
+|------|------|------|-------------|
+| tiny | `ggml-tiny.bin` | ~75 MB | `language: ur` + `whisper_model: tiny`, or `language: auto` |
+| base | `ggml-base.bin` | ~142 MB | Non-English jobs; recommended minimum for Urdu |
+| small | `ggml-small.bin` | ~466 MB | Higher accuracy for non-Latin scripts |
+
+**Job examples:**
+
+```json
+{ "job_type": "subtitle_generation", "parameters": { "language": "ur", "whisper_model": "base" } }
+{ "job_type": "subtitle_generation", "parameters": { "language": "auto", "whisper_model": "base" } }
+```
+
 ### Offline Download (air-gapped systems)
 
 If the machine has no internet access, download the model on another machine:
@@ -483,11 +514,14 @@ sudo cp build/bin/whisper-cli /usr/local/bin/whisper-cli
 
 | Model | File | Size | Speed (CPU) | RAM Usage | When to use |
 |-------|------|------|-------------|-----------|-------------|
-| tiny.en | `ggml-tiny.en.bin` | 75 MB | ~10× real-time | ~300 MB | Testing, low-power hardware |
-| base.en | `ggml-base.en.bin` | 142 MB | ~6× real-time | ~500 MB | **Recommended default** |
-| small.en | `ggml-small.en.bin` | 466 MB | ~3× real-time | ~1.2 GB | High accuracy requirements |
+| tiny.en | `ggml-tiny.en.bin` | 75 MB | ~10× real-time | ~300 MB | Testing, low-power hardware, English |
+| base.en | `ggml-base.en.bin` | 142 MB | ~6× real-time | ~500 MB | **English default (karaoke)** |
+| small.en | `ggml-small.en.bin` | 466 MB | ~3× real-time | ~1.2 GB | High English accuracy |
+| base | `ggml-base.bin` | 142 MB | ~6× real-time | ~500 MB | **Multilingual (Urdu, Hindi, auto)** |
+| small | `ggml-small.bin` | 466 MB | ~3× real-time | ~1.2 GB | Multilingual high accuracy |
 
-All `.en` models are English-only. They are faster and more accurate for English than the multilingual equivalents.
+All `.en` models are English-only. Models without `.en` are multilingual (99 languages).
+VoxClone routes by `parameters.language` and `WHISPER_ROUTING_POLICY` — see Phase 7 docs.
 
 **Change the active model:**
 ```bash
