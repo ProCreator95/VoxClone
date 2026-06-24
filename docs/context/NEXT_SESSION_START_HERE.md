@@ -4,9 +4,9 @@
 
 ---
 
-## Current State (as of 2026-06-22)
+## Current State (as of 2026-06-23)
 
-**Phases 1–6 are complete.** **Phase 7 Milestone 2 is complete and validated** — multilingual Whisper routing.
+**Phases 1–7 and Phase 8 feasibility are complete.**
 
 ```
 Phase 1: Upload → ffprobe → Media + Job persistence → Redis progress
@@ -15,40 +15,87 @@ Phase 3: subtitle_burn → FFmpeg H.264 burn-in → burned MP4
 Phase 4: karaoke → word-level ASS → karaoke MP4 (with_vocals mode)
 Phase 5: vocal_separation + all karaoke modes + separation_job_id reuse
 Phase 6: audio_enhance → FFmpeg 48 kHz → deep-filter CLI → enhanced WAV
-Phase 7: multilingual Whisper routing — language-first model selection (M2 validated)
+Phase 7 M2: multilingual Whisper routing — language-first model selection (validated)
+Phase 7 M3: Whisper benchmark — production model recommendations (complete)
+Phase 8: Voice cloning feasibility study (complete — no implementation)
 ```
 
 **Git state:** `feature/whisper-multilingual`
 
 ---
 
-## What to Do Next
+## Approved Roadmap (Phases 9–13)
 
-Phase 7 M2 is validated. Next planned work is **Phase 7 Milestone 3** (Urdu quality / model benchmark) or **Phase 7 M4** (Roman Urdu transliteration — design only today).
+| Phase | Name | Status |
+|-------|------|--------|
+| **9** | Flutter Frontend MVP | 🔜 **Next** |
+| **10** | Authentication & User Management | Planned |
+| **11** | Billing & Commercialization | Planned |
+| **12** | Hetzner Deployment & Production Launch | Deferred |
+| **13** | Roman Urdu & Translation Features | Deferred |
 
-### Quick test — Urdu subtitles
+**Strategic locks:**
 
-Requires multilingual models (`ggml-base.bin` or `ggml-small.bin`) in `backend/models/`.
+- Hetzner deployment → **Phase 12** (not before)
+- Flutter frontend → **Phase 9**
+- Roman Urdu → **Phase 13**
+- Voice cloning production → **post-Phase 12** (GPU required)
+- SQLite → **OK for MVP**; PostgreSQL deferred until proven growth
+- No Cloud Run · no serverless · no Kubernetes · no architecture rewrite
 
-```bash
-cd "/home/shz/Documents/Mustafa projects/VoxClone/backend"
-source .venv/bin/activate
+**Architecture (unchanged):** FastAPI · Redis · Celery · SQLite · whisper.cpp · DeepFilterNet · Demucs
 
-JOB_ID=$(curl -s -X POST http://localhost:8000/api/v1/jobs \
-  -H "Content-Type: application/json" \
-  -d "{\"media_id\":\"<MEDIA_UUID>\",\"job_type\":\"subtitle_generation\",\"parameters\":{\"language\":\"ur\",\"whisper_model\":\"small\"}}" \
-  | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+---
 
-# Poll until completed, then verify parameters:
-curl -s "http://localhost:8000/api/v1/jobs/$JOB_ID" | python3 -m json.tool
-# Expect: whisper_model_file=ggml-small.bin, whisper_model_variant=multilingual, detected_language=ur
-```
+## Phase 7 M3 — Benchmark Complete ✅
 
-**Mixed English + Urdu media:** use `"language": "auto"`.
+**Report:** `docs/reports/PHASE7_M3_WHISPER_BENCHMARK_REPORT.md`
 
-**English-only (default):** omit `language` — `WHISPER_ROUTING_POLICY=english_first` preserves Phase 5 behaviour.
+| Product | Recommended model |
+|---------|-------------------|
+| English subtitles | `base` → `ggml-base.en.bin` |
+| English karaoke | `base` → `ggml-base.en.bin` |
+| Urdu (experimental) | `small` → `ggml-small.bin` |
+| Hetzner 4/8 CPU MVP | Conditional GO (Whisper/Demucs workloads) |
 
-See `docs/reports/PHASE7_M2_MULTILINGUAL_VALIDATION_REPORT.md` for validation evidence.
+---
+
+## Phase 8 — Voice Cloning Feasibility Complete ✅
+
+**Report:** `docs/reports/PHASE8_VOICE_CLONING_FEASIBILITY_STUDY.md`
+
+| Decision | Recommendation |
+|----------|----------------|
+| Best overall engine | **Chatterbox** (Multilingual V3 / Turbo) — MIT |
+| PoC candidate | **Chatterbox-Turbo** (English-first) |
+| Roadmap alternate | **OpenVoice V2** — MIT |
+| Disqualified (commercial) | XTTS-v2 (CPML), F5-TTS weights (NC), Fish Speech (custom license) |
+| Production requirement | **GPU worker** — not viable on 4 vCPU / 8 GB CPU-only VPS |
+| MVP includes cloning? | **No** |
+
+Voice cloning remains **out of MVP scope**. No packages installed; no code changes in Phase 8.
+
+---
+
+## Global Output Retention Policy (Planned)
+
+**Not yet implemented** — policy defined for future phases.
+
+| Setting | Default |
+|---------|---------|
+| Retention period | **10 days** (configurable via `.env` — not hard-coded) |
+| Scope | All generated outputs (subtitles, karaoke, stems, enhanced audio, future clone outputs) |
+
+Future: expiry timestamps, automated cleanup jobs, download availability indicators, user warnings before processing. See `PROJECT_SNAPSHOT_2026_06_22.md` §16.
+
+---
+
+## What to Do Next — Phase 9
+
+1. **Flutter Frontend MVP** — upload, job creation, progress polling, download
+2. English-first UI (subtitles, karaoke, enhancement, separation)
+3. Surface retention warning before job submission
+4. Wire to existing `POST /api/v1/uploads` and `POST /api/v1/jobs` APIs
 
 ---
 
@@ -86,15 +133,14 @@ celery -A app.tasks.celery_app:celery_app worker \
 
 ---
 
-## Key Files (Phase 7)
+## Key Files
 
 | File | Role |
 |------|------|
-| `app/services/whisper_models.py` | Language-first routing, dual model registry |
-| `app/services/whisper_service.py` | Subprocess; uses resolved `cli_language` |
-| `app/schemas/job.py` | Validates `parameters.language` on Whisper jobs |
-| `app/core/config.py` | `WHISPER_ROUTING_POLICY` |
-| `tests/test_whisper_models.py` | Routing unit tests (13 cases) |
+| `app/services/whisper_models.py` | Language-first routing |
+| `app/services/whisper_service.py` | whisper.cpp subprocess |
+| `app/tasks/media_tasks.py` | All Celery tasks |
+| `tests/test_whisper_models.py` | Routing unit tests |
 
 ---
 
@@ -113,12 +159,10 @@ Full Phase 6 policy: `docs/reports/PHASE6_DEPENDENCY_PROTECTION_RULES.md`
 ## Full Documentation
 
 ```
+docs/context/PROJECT_SNAPSHOT_2026_06_22.md          ← authoritative state
 docs/context/MASTER_PROJECT_HANDOFF.md
-docs/context/CURRENT_PROJECT_STATE.md
-docs/reports/PHASE7_M1_WHISPER_MULTILINGUAL_DESIGN.md
-docs/reports/PHASE7_M2_MULTILINGUAL_ROUTING_IMPLEMENTATION.md
+docs/reports/PHASE8_VOICE_CLONING_FEASIBILITY_STUDY.md
+docs/reports/PHASE7_M3_WHISPER_BENCHMARK_REPORT.md
 docs/reports/PHASE7_M2_MULTILINGUAL_VALIDATION_REPORT.md
-docs/reports/PHASE6_M2_VALIDATION_REPORT.md
-docs/reports/PHASE5_*.md
 docs/testing/WHISPER_CPP_SETUP.md
 ```
