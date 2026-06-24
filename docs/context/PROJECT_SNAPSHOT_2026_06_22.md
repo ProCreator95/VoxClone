@@ -1,6 +1,6 @@
 # VoxClone — Project Snapshot
 
-**Date:** 2026-06-23 (updated)  
+**Date:** 2026-06-24 (updated)  
 **Purpose:** Standalone context document for starting new ChatGPT or Cursor sessions without prior chat history.  
 **Audience:** Developers, AI assistants, and stakeholders resuming work on VoxClone.
 
@@ -10,11 +10,11 @@
 
 **VoxClone** is an offline-first AI media processing platform. Users upload video or audio, submit processing jobs via a REST API, and download results. All AI models run locally — no cloud API keys required for core pipelines.
 
-**Current maturity:** Phases 1–7 are complete (including Phase 7 M3 Whisper benchmark). **Phase 8 Voice Cloning Feasibility Study** is complete (documentation only). Branch: `feature/whisper-multilingual`.
+**Current maturity:** Phases 1–8 are complete. **Phase 9 Flutter Frontend MVP** is in progress (M1 shell + UI refactor on `feature/flutter-frontend-mvp`). Branch: `feature/flutter-frontend-mvp`.
 
 **Business objective:** Launch a commercially viable MVP as quickly as possible and validate demand before investing in GPU infrastructure, voice cloning production, or advanced multilingual features.
 
-**Infrastructure decision:** **Hetzner VPS** selected (initial: 4 vCPU / 8 GB RAM; future: 8 vCPU / 16 GB RAM) — **deployment deferred to Phase 12**. Retain current stack — **no Cloud Run, no serverless, no Kubernetes, no architecture rewrite.**
+**Infrastructure decision:** **Hetzner VPS** selected (initial: 4 vCPU / 8 GB RAM; future: 8 vCPU / 16 GB RAM) — **deployment deferred to Phase 14**. Retain current stack — **no Cloud Run, no serverless, no Kubernetes, no architecture rewrite.**
 
 **Database:** **SQLite acceptable for MVP launch.** PostgreSQL deferred until proven growth.
 
@@ -44,6 +44,7 @@
 ```
 VoxClone/
 ├── backend/           FastAPI app, Celery tasks, services, models, tests
+├── frontend/          Flutter mobile client (Phase 9)
 ├── docs/
 │   ├── context/       Project state and handoff docs (this file lives here)
 │   ├── reports/       Phase completion and validation reports
@@ -80,17 +81,16 @@ VoxClone/
 
 ## 3. Current Branch Status
 
-**Active branch:** `feature/whisper-multilingual`  
-**Remote:** Up to date with `origin/feature/whisper-multilingual`
+**Active branch:** `feature/flutter-frontend-mvp`  
+**Remote:** See `git status` for sync state with origin.
 
 **Recent commit history (main line):**
 
 ```
+Phase 9 M1: Flutter premium UI shell (frontend/)
+Phase 8: Voice cloning feasibility study
+Phase 7 M3: Whisper commercial benchmark
 149dc96 Phase 6 Milestone 2: DeepFilterNet audio enhancement via CLI subprocess
-20c88e9 Docs: synchronize Phase 5 documentation with Git state
-ddb2366 Phase 5 Milestone 4: stem reuse and reusable karaoke outputs
-c0f67c5 Phase 5: source separation, karaoke modes, and ML worker infrastructure
-47be178 Phase 4: karaoke generation complete
 ```
 
 **Phase tags:** `v0.1-foundation` · `phase2-subtitles-working` · `phase3-subtitle-burn` · `phase4-karaoke-generation` · `phase5-source-separation` · `phase5-complete` · `phase5-final`
@@ -99,15 +99,16 @@ c0f67c5 Phase 5: source separation, karaoke modes, and ML worker infrastructure
 
 | Branch | Phase |
 |--------|-------|
+| `feature/flutter-frontend-mvp` | Phase 9 (current) |
+| `feature/whisper-multilingual` | Phase 7 |
 | `feature/subtitle-pipeline` | Phase 2 |
 | `feature/subtitle-burn` | Phase 3 |
 | `feature/karaoke-generation` | Phase 4 |
 | `feature/source-separation` | Phase 5 |
 | `feature/audio-enhancement` | Phase 6 |
-| `feature/whisper-multilingual` | Phase 7 (current) |
 | `main` | Stable baseline |
 
-**Working tree (as of snapshot date):** Uncommitted changes on `feature/whisper-multilingual` including Phase 7 routing code, unit tests, context docs, and Phase 7 reports. See `git status` for the authoritative list.
+**Working tree:** See `git status` for the authoritative list.
 
 ---
 
@@ -204,13 +205,13 @@ Config: `WHISPER_ROUTING_POLICY=english_first` (default — preserves Phase 5 En
 - **No architecture rewrite planned**
 - **Avoid major infrastructure changes before commercial launch**
 - Retain current architecture: FastAPI, Redis, Celery, **SQLite** (MVP), whisper.cpp, DeepFilterNet CLI, Demucs
-- **PostgreSQL deferred** until proven growth (Phase 12+ migration candidate)
+- **PostgreSQL deferred** until proven growth (Phase 14+ migration candidate)
 
 ### Production considerations
 
 | Topic | Guidance |
 |-------|----------|
-| Database | SQLite OK for MVP; PostgreSQL when growth requires (Phase 12+) |
+| Database | SQLite OK for MVP; PostgreSQL when growth requires (Phase 14+) |
 | Celery | `--queues media,ai --concurrency 1` when running Demucs (OOM risk) |
 | Whisper models | English-only hosts: ~681 MB (`.en.bin` trio); full multilingual: ~1.36 GB |
 | DeepFilterNet | `deep-filter` v0.5.6 binary must be on PATH or set via `DEEPFILTER_BINARY` |
@@ -424,15 +425,16 @@ Only after MVP validates demand:
 
 | Feature | Phase | Reason deferred |
 |---------|-------|-----------------|
-| Roman Urdu transliteration | **13** | Transcription accuracy + translation pipeline |
-| Urdu translation / localization | **13** | Post-MVP multilingual expansion |
-| Voice cloning (production) | Post-**12** | Phase 8 feasibility only; GPU required; not MVP |
-| Voice replacement / dubbing | Post-**12** | Depends on cloning + pipeline maturity |
-| Flutter frontend | **9** | After Phase 8 feasibility |
+| Roman Urdu transliteration | **15** | Transcription accuracy + translation pipeline |
+| Urdu translation / localization | **15** | Post-MVP multilingual expansion |
+| Voice cloning (production) | **13–14** | Phase 8 feasibility only; GPU required; local PoC in Phase 13 |
+| Voice replacement / dubbing | Post-**14** | Depends on cloning + pipeline maturity |
+| Flutter frontend | **9** (in progress) | SaaS shell + API wiring |
 | API authentication | **10** | Pre-launch hardening |
 | Billing / commercialization | **11** | After frontend MVP |
-| Hetzner deployment | **12** | Deferred until Phases 9–11 progress |
-| PostgreSQL migration | **12+** | SQLite acceptable for MVP |
+| Creator Tools (recorder, editors) | **12** | Post-billing feature expansion |
+| Hetzner deployment | **14** | Deferred until Phases 9–13 progress |
+| PostgreSQL migration | **14+** | SQLite acceptable for MVP |
 | `ggml-medium.bin` / larger Whisper | — | M3 recommends `base.en`; upgrade at revenue |
 | WebSocket progress | Post-MVP | Nice-to-have |
 | Cloud Run / serverless / K8s | — | **Explicitly rejected** |
@@ -453,7 +455,7 @@ Only after MVP validates demand:
 | L1 | `ggml-tiny.en.bin` drops lyrics on music-heavy content (20–30 s gaps) | Use `base` or `small` English model |
 | L2 | Urdu word errors on `ggml-small.bin` (phonetic substitutions) | Use `small` + explicit `language: "ur"`; try `medium` after M3 benchmark |
 | L3 | Celery task retry after partial execution → `JobConflictError` | Unhandled — re-queued tasks may fail |
-| L4 | SQLite unsuitable for multi-worker concurrent writes at scale | PostgreSQL migration when growth requires (Phase 12+) |
+| L4 | SQLite unsuitable for multi-worker concurrent writes at scale | PostgreSQL migration when growth requires (Phase 14+) |
 | L5 | No API authentication | Phase 10 |
 | L6 | `processed/` and `uploads/` accumulate indefinitely | Configurable retention policy planned (§16); not yet implemented |
 | L7 | Phase 6 full E2E HTTP validation not recorded in M2 session | Run before production tag |
@@ -475,16 +477,20 @@ Nine bugs fixed across Phases 2–7. Full write-ups in `docs/context/KNOWN_BUGS_
 
 ---
 
-## 13. Approved Roadmap (Phases 8–13)
+## 13. Approved Roadmap (Phases 8–15)
 
 | Phase | Name | Status | Notes |
 |-------|------|--------|-------|
 | **8** | Voice Cloning Feasibility | ✅ Complete | `PHASE8_VOICE_CLONING_FEASIBILITY_STUDY.md` — no implementation |
-| **9** | Flutter Frontend MVP | 🔜 Next | Deferred until Phase 8 complete |
+| **9** | Flutter Frontend MVP | 🔄 In progress | SaaS shell + core feature wiring; `frontend/` |
 | **10** | Authentication & User Management | ⏳ Planned | |
 | **11** | Billing & Commercialization | ⏳ Planned | Premium tiers; voice cloning as future add-on |
-| **12** | Hetzner Deployment & Production Launch | ⏳ Planned | 4 vCPU / 8 GB MVP; GPU worker for cloning evaluated here |
-| **13** | Roman Urdu & Translation Features | ⏳ Planned | Includes Urdu localization gap from voice engines |
+| **12** | Creator Tools | ⏳ Planned | Voice Recorder Studio · Karaoke Recording Studio · Audio Cutter · Audio Joiner · Video Cutter · Video Joiner |
+| **13** | Voice Cloning Experiments | ⏳ Planned | Chatterbox Turbo PoC · OpenVoice V2 evaluation · **local laptop only** · no production deployment |
+| **14** | Hetzner Deployment & Production Launch | ⏳ Planned | 4 vCPU / 8 GB MVP; GPU worker evaluated after revenue validation |
+| **15** | Roman Urdu & Translation Features | ⏳ Planned | Includes Urdu localization gap from voice engines |
+
+**Voice cloning note:** Voice cloning remains **experimental** until GPU-backed infrastructure is justified commercially. Phase 13 is local experimentation only; production deployment is deferred to Phase 14+ when revenue validates GPU spend.
 
 ### Phase 7 M3 — Complete ✅
 
@@ -501,7 +507,7 @@ Report: `docs/reports/PHASE7_M3_WHISPER_BENCHMARK_REPORT.md`
 
 ### Phase 8 — Voice Cloning Feasibility ✅
 
-Recommended engine for future PoC: **Chatterbox-Turbo** (MIT, pip install, English MVP). GPU required for production; **not on Phase 12 CPU-only VPS**.
+Recommended engine for future PoC: **Chatterbox-Turbo** (MIT, pip install, English MVP). GPU required for production; **Phase 13 = local laptop experiments only**; production GPU hosting evaluated at Phase 14.
 
 Report: `docs/reports/PHASE8_VOICE_CLONING_FEASIBILITY_STUDY.md`
 
@@ -517,25 +523,29 @@ Report: `docs/reports/PHASE8_VOICE_CLONING_FEASIBILITY_STUDY.md`
 
 ## 14. Immediate Action Items
 
-### Phase 9 — Flutter Frontend MVP (next)
+### Phase 9 — Flutter Frontend MVP (in progress)
 
-- [ ] Define Flutter MVP screens (upload, job submit, progress, download)
+- [x] Premium SaaS application shell (sidebar / drawer navigation)
+- [x] Theme system (light / dark / system)
+- [x] Placeholder screens for Creator Tools, Media Tools, Account, Billing
 - [ ] Wire to existing REST API (Phases 1–7 backends)
 - [ ] Surface retention warning before job submission (see §16)
 - [ ] English-first product scope; Urdu experimental toggle optional
 
-### Pre–Phase 12 (Phases 10–11)
+### Pre–Phase 14 (Phases 10–13)
 
-- [ ] Phase 10: Authentication & user management design
+- [ ] Phase 10: Authentication & user management
 - [ ] Phase 11: Billing tiers (subtitle, karaoke, enhancement, separation)
+- [ ] Phase 12: Creator Tools implementation
+- [ ] Phase 13: Voice cloning local PoC (Chatterbox / OpenVoice)
 - [ ] Implement configurable output retention (§16) before production launch
 
-### Phase 12 — Hetzner deployment (deferred)
+### Phase 14 — Hetzner deployment (deferred)
 
 - [ ] Provision Hetzner VPS (4 vCPU / 8 GB RAM)
 - [ ] Deploy: FastAPI, Redis, Celery, SQLite, whisper.cpp, Demucs, `deep-filter`
 - [ ] Confirm Phase 7 M3 Whisper estimates with `-t 4`
-- [ ] Evaluate GPU worker add-on for voice cloning PoC (Chatterbox)
+- [ ] Evaluate GPU worker add-on when commercially justified
 
 ### Completed
 
@@ -593,8 +603,8 @@ The primary objective is validating market demand before investing in larger AI 
 - Voice replacement
 - Dubbing workflows
 - Real-time processing
-- Hetzner production deployment (Phase 12)
-- Roman Urdu (Phase 13)
+- Hetzner production deployment (Phase 14)
+- Roman Urdu (Phase 15)
 
 ### Infrastructure Strategy
 
@@ -612,6 +622,7 @@ The primary objective is validating market demand before investing in larger AI 
 - No Kubernetes
 - No microservices split
 - No architecture rewrite
+- **Hetzner deployment deferred to Phase 14**
 
 **Current architecture remains:**
 
@@ -661,7 +672,7 @@ The project should first demonstrate:
 
 ### Principle
 
-All generated outputs must have a **configurable retention period**. The default is **10 days**. This value must **not** be hard-coded in application logic — it must be adjustable via configuration (environment variable or settings file) without code changes.
+All generated outputs are subject to a **configurable retention policy**. The default retention period is **10 days** (`OUTPUT_RETENTION_DAYS=10`). This value must **never be hard-coded** in application logic — it must remain configurable via environment variables (or settings file) without code changes.
 
 ### Planned configuration
 
@@ -673,15 +684,16 @@ OUTPUT_RETENTION_ENABLED=true
 
 ### Scope — applies to all generated outputs
 
-| Output type | Path pattern (today) |
-|-------------|---------------------|
-| Subtitle files (SRT, VTT, TXT) | `processed/*_subtitles.*`, `*_transcript.txt` |
-| Karaoke video | `processed/*_karaoke.mp4` |
-| Karaoke assets (ASS) | `processed/*_karaoke.ass` |
-| Enhanced audio | `processed/*_enhanced.wav` |
-| Vocal separation | `processed/*_vocals.wav`, `*_instrumental.wav` |
-| Burned video | `processed/*_subtitled.mp4` |
-| Future voice cloning | `processed/*_cloned.wav` (planned) |
+| Output category | Examples |
+|-----------------|----------|
+| Subtitles | SRT, VTT, TXT (`processed/*_subtitles.*`, `*_transcript.txt`) |
+| Karaoke outputs | MP4, ASS (`processed/*_karaoke.mp4`, `*_karaoke.ass`) |
+| Enhanced audio | WAV (`processed/*_enhanced.wav`) |
+| Vocal stems | WAV (`processed/*_vocals.wav`) |
+| Music stems | WAV (`processed/*_instrumental.wav`) |
+| Burned video | MP4 (`processed/*_subtitled.mp4`) |
+| Future voice-cloning outputs | `processed/*_cloned.wav` (planned) |
+| Future creator-tool outputs | Recordings, trimmed/joined media (planned) |
 | Any future generated media | Under `processed/` and related download paths |
 
 ### Future implementation requirements
@@ -745,4 +757,4 @@ This snapshot (`docs/context/PROJECT_SNAPSHOT_2026_06_22.md`) is the **authorita
 
 ---
 
-*Snapshot updated: 2026-06-23 — Phases 7 M3 and 8 complete; approved roadmap Phases 9–13; retention policy defined.*
+*Snapshot updated: 2026-06-24 — Phase 9 Flutter shell in progress; approved roadmap Phases 9–15; retention policy expanded.*
